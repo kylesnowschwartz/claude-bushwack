@@ -1,0 +1,36 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "claude-bushwack"
+version = "0.1.0"
+description = "CLI/TUI tool for branching Claude Code conversations"
+authors = ["Kyle <kyle@example.com>"]
+readme = "README.md"
+packages = [{include = "claude_bushwack", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+textual = "^0.47.0"
+rich = "^13.0.0"
+click = "^8.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0.0"
+textual-dev = "^1.0.0"
+ruff = "^0.1.0"
+
+[tool.poetry.scripts]
+claude-bushwack = "claude_bushwack.cli:main"
+cb = "claude_bushwack.cli:main"
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+indent-width = 2
+
+[tool.ruff.format]
+indent-style = "space"
+quote-style = "single"
+skip-magic-trailing-comma = true
