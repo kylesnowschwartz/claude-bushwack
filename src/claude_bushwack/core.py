@@ -1,12 +1,14 @@
 """Core functionality for claude-bushwack."""
 
+import json
 import re
 import shutil
 import uuid as uuid_module
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .exceptions import (
   AmbiguousSessionIDError,
@@ -25,6 +27,7 @@ class ConversationFile:
   project_dir: str
   project_path: str
   last_modified: datetime
+  parent_uuid: Optional[str] = None
 
 
 class ClaudeConversationManager:
@@ -55,6 +58,40 @@ class ClaudeConversationManager:
     """Get project directory name for current working directory."""
     current_path = Path.cwd()
     return self._path_to_project_dir(current_path)
+
+  def _get_parent_uuid(self, conversation_file: Path) -> Optional[str]:
+    """Extract parentUuid from the first line of a JSONL conversation file."""
+    try:
+      with open(conversation_file, 'r') as f:
+        first_line = f.readline().strip()
+        if first_line:
+          data = json.loads(first_line)
+          parent_uuid = data.get('parentUuid')
+          return parent_uuid if parent_uuid else None
+      return None
+    except (OSError, json.JSONDecodeError):
+      return None
+
+  def _set_parent_uuid_in_jsonl(
+    self, conversation_file: Path, parent_uuid: str
+  ) -> None:
+    """Set the parentUuid in the first line of a JSONL conversation file."""
+    try:
+      # Read the file
+      with open(conversation_file, 'r') as f:
+        first_line = f.readline()
+        rest_of_file = f.read()
+
+      # Parse and modify the first line
+      data = json.loads(first_line)
+      data['parentUuid'] = parent_uuid
+
+      # Write back to file
+      with open(conversation_file, 'w') as f:
+        f.write(json.dumps(data) + '\n')
+        f.write(rest_of_file)
+    except (OSError, json.JSONDecodeError) as e:
+      raise BranchingError(f'Failed to set parentUuid in JSONL file: {e}', e)
 
   def find_all_conversations(
     self,
@@ -123,12 +160,16 @@ class ClaudeConversationManager:
                 # Fallback to current time if stat fails
                 last_modified = datetime.now()
 
+              # Get parent UUID from JSONL file
+              parent_uuid = self._get_parent_uuid(file_path)
+
               conversation = ConversationFile(
                 path=file_path,
                 uuid=uuid,
                 project_dir=project_dir_name,
                 project_path=str(project_path),
                 last_modified=last_modified,
+                parent_uuid=parent_uuid,
               )
               conversations.append(conversation)
           except (OSError, PermissionError):
@@ -218,6 +259,9 @@ class ClaudeConversationManager:
       # Copy the conversation file
       shutil.copy2(source_conversation.path, target_file_path)
 
+      # Set the parentUuid in the copied file
+      self._set_parent_uuid_in_jsonl(target_file_path, source_conversation.uuid)
+
       # Create and return new ConversationFile object
       return ConversationFile(
         path=target_file_path,
@@ -225,6 +269,7 @@ class ClaudeConversationManager:
         project_dir=target_project_dir,
         project_path=str(target_project_path),
         last_modified=datetime.now(),
+        parent_uuid=source_conversation.uuid,
       )
 
     except (ConversationNotFoundError, AmbiguousSessionIDError, InvalidUUIDError):
@@ -232,3 +277,58 @@ class ClaudeConversationManager:
       raise
     except Exception as e:
       raise BranchingError(f'Failed to branch conversation: {e}', e)
+
+  def build_conversation_tree(
+    self, conversations: List[ConversationFile]
+  ) -> Tuple[List[ConversationFile], Dict[str, List[ConversationFile]]]:
+    """Build a tree structure from conversations based on parent-child relationships.
+
+    Args:
+        conversations: List of ConversationFile objects
+
+    Returns:
+        Tuple of (root_conversations, children_dict)
+        - root_conversations: Conversations with no parent
+        - children_dict: Dict mapping parent UUID to list of child conversations
+    """
+    children_dict = defaultdict(list)
+    roots = []
+
+    for conversation in conversations:
+      if conversation.parent_uuid:
+        children_dict[conversation.parent_uuid].append(conversation)
+      else:
+        roots.append(conversation)
+
+    return roots, children_dict
+
+  def get_conversation_ancestry(self, session_id: str) -> List[ConversationFile]:
+    """Get the full ancestry chain for a conversation (from root to current).
+
+    Args:
+        session_id: UUID of the conversation to trace
+
+    Returns:
+        List of ConversationFile objects representing the ancestry chain
+
+    Raises:
+        ConversationNotFoundError: If session_id not found
+    """
+    conversation = self.find_conversation(session_id)
+    ancestry = [conversation]
+
+    # Walk up the parent chain
+    current = conversation
+    seen_uuids = {current.uuid}  # Prevent infinite loops
+
+    while current.parent_uuid and current.parent_uuid not in seen_uuids:
+      seen_uuids.add(current.parent_uuid)
+      try:
+        parent = self.find_conversation(current.parent_uuid)
+        ancestry.insert(0, parent)  # Add to beginning
+        current = parent
+      except ConversationNotFoundError:
+        # Parent not found, stop traversing
+        break
+
+    return ancestry

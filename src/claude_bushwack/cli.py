@@ -5,6 +5,7 @@ from pathlib import Path
 import click
 from rich.console import Console
 from rich.table import Table
+from rich.tree import Tree
 
 from .core import ClaudeConversationManager
 from .exceptions import (
@@ -31,7 +32,12 @@ def main():
 @click.option(
   '--project', 'project_path', help='List conversations from specific project path'
 )
-def list_conversations(all_projects, project_path):
+@click.option(
+  '--tree',
+  is_flag=True,
+  help='Show conversations in tree format (parent-child relationships)',
+)
+def list_conversations(all_projects, project_path, tree):
   """List available conversations."""
   try:
     manager = ClaudeConversationManager()
@@ -60,10 +66,54 @@ def list_conversations(all_projects, project_path):
       f'[green]Found {len(conversations)} conversation(s) for {scope}[/green]\n'
     )
 
-    for conv in conversations:
-      console.print(
-        f"[cyan]{conv.uuid[:8]}...[/cyan] - {conv.project_dir} - {conv.last_modified.strftime('%Y-%m-%d %H:%M')}"
-      )
+    if tree:
+      # Show tree format
+      roots, children_dict = manager.build_conversation_tree(conversations)
+
+      if roots:
+        tree_view = Tree('🌳 Conversation Tree')
+
+        def add_conversation_to_tree(parent_node, conv, children):
+          # Create label with conversation info
+          parent_text = ' (parent)' if not conv.parent_uuid else ' (branch)'
+          label = f"[cyan]{conv.uuid[:8]}...[/cyan] - {conv.last_modified.strftime('%Y-%m-%d %H:%M')}{parent_text}"
+
+          conv_node = parent_node.add(label)
+
+          # Add children recursively
+          if conv.uuid in children:
+            for child in sorted(children[conv.uuid], key=lambda c: c.last_modified):
+              add_conversation_to_tree(conv_node, child, children)
+
+        # Add all root conversations
+        for root in sorted(roots, key=lambda c: c.last_modified, reverse=True):
+          add_conversation_to_tree(tree_view, root, children_dict)
+
+        console.print(tree_view)
+
+      # Show orphaned branches (children whose parents aren't in the current scope)
+      orphaned = [
+        conv
+        for conv in conversations
+        if conv.parent_uuid and conv.parent_uuid not in [c.uuid for c in conversations]
+      ]
+      if orphaned:
+        console.print(
+          '\n[yellow]🔗 Orphaned branches (parent not in current scope):[/yellow]'
+        )
+        for conv in sorted(orphaned, key=lambda c: c.last_modified, reverse=True):
+          console.print(
+            f"  [dim]└─[/dim] [cyan]{conv.uuid[:8]}...[/cyan] - parent: [dim]{conv.parent_uuid[:8]}...[/dim] - {conv.last_modified.strftime('%Y-%m-%d %H:%M')}"
+          )
+    else:
+      # Show flat format
+      for conv in conversations:
+        parent_info = (
+          f' (branch of {conv.parent_uuid[:8]}...)' if conv.parent_uuid else ''
+        )
+        console.print(
+          f'[cyan]{conv.uuid}[/cyan] - {conv.project_dir} - {conv.last_modified.strftime("%Y-%m-%d %H:%M")}{parent_info}'
+        )
 
   except Exception as e:
     console.print(f'[red]Error listing conversations: {e}[/red]')
@@ -78,7 +128,10 @@ def list_conversations(all_projects, project_path):
   help='Target project path for the branch (defaults to current directory)',
 )
 def branch(session_id, target_project):
-  """Branch (copy) a conversation to current or specified project."""
+  """Branch (copy) a conversation to current or specified project.
+
+  Creates a copy of the conversation and sets up parent-child relationship
+  for tracking conversation lineage. Use 'tree' command to view ancestry."""
   try:
     manager = ClaudeConversationManager()
 
@@ -126,6 +179,68 @@ def branch(session_id, target_project):
 
   except (InvalidUUIDError, BranchingError) as e:
     console.print(f'[red]Error: {e}[/red]')
+    raise click.ClickException(str(e))
+
+  except Exception as e:
+    console.print(f'[red]Unexpected error: {e}[/red]')
+    raise click.ClickException(str(e))
+
+
+@main.command()
+@click.argument('session_id')
+def tree(session_id):
+  """Show the full ancestry tree for a conversation."""
+  try:
+    manager = ClaudeConversationManager()
+
+    # Get the ancestry chain
+    ancestry = manager.get_conversation_ancestry(session_id)
+
+    if len(ancestry) == 1:
+      console.print(
+        f'[cyan]{ancestry[0].uuid}[/cyan] has no parent (original conversation)'
+      )
+      return
+
+    console.print('[green]Conversation Ancestry Chain:[/green]\n')
+
+    # Display the ancestry chain
+    for i, conv in enumerate(ancestry):
+      is_current = i == len(ancestry) - 1
+      is_root = i == 0
+
+      if is_root:
+        prefix = '🌱'
+        suffix = ' (original)'
+      elif is_current:
+        prefix = '📍'
+        suffix = ' (current)'
+      else:
+        prefix = '├─'
+        suffix = ''
+
+      console.print(
+        f"{prefix} [cyan]{conv.uuid[:8]}...[/cyan] - {conv.project_path} - {conv.last_modified.strftime('%Y-%m-%d %H:%M')}{suffix}"
+      )
+
+    # Show children if any
+    all_conversations = manager.find_all_conversations(all_projects=True)
+    children = [
+      conv for conv in all_conversations if conv.parent_uuid == ancestry[-1].uuid
+    ]
+
+    if children:
+      console.print('\n[green]Children of current conversation:[/green]')
+      for child in sorted(children, key=lambda c: c.last_modified):
+        console.print(
+          f"  └─ [cyan]{child.uuid[:8]}...[/cyan] - {child.project_path} - {child.last_modified.strftime('%Y-%m-%d %H:%M')}"
+        )
+
+  except ConversationNotFoundError as e:
+    console.print(f'[red]Error: {e}[/red]')
+    console.print(
+      "[yellow]Tip: Use 'claude-bushwack list --all' to see all available conversations[/yellow]"
+    )
     raise click.ClickException(str(e))
 
   except Exception as e:

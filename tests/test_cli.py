@@ -31,3 +31,23 @@ def test_list_command():
   assert (
     'Found' in result.output and 'conversation(s)' in result.output
   ) or 'No conversations found' in result.output
+
+
+def test_tree_command():
+  """Test tree command with invalid session ID."""
+  runner = CliRunner()
+  result = runner.invoke(main, ['tree', 'invalid-session-id'])
+  # Should fail with invalid UUID format error
+  assert result.exit_code != 0
+  assert 'Invalid UUID format' in result.output
+
+
+def test_list_tree_flag():
+  """Test list command with --tree flag."""
+  runner = CliRunner()
+  result = runner.invoke(main, ['list', '--tree'])
+  assert result.exit_code == 0
+  # Should either show tree or "No conversations found"
+  assert (
+    '🌳 Conversation Tree' in result.output or 'No conversations found' in result.output
+  )
