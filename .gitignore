@@ -1,1 +1,18 @@
 planning/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Poetry
+.poetry/
+
+# Textual logs
+.textual/
+
+# Local notes
+coverage.xml
+.mypy_cache/
+.pytest_cache/
+

@@ -64,3 +64,4 @@ This is currently a scaffold with placeholder implementations. The TODOS/ direct
   - cli.py: Handles Rich formatting, catches exceptions, provides user-friendly messages
   - tui.py: Handles Textual widgets, catches exceptions, provides visual feedback
   - exceptions.py: Shared exception definitions with structured data
+- Do not test the tui directly - ask the user to test it manually
