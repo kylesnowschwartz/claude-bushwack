@@ -43,6 +43,9 @@ class BushwackApp(App):
     Binding("k", "cursor_up", "Up", show=False),
     Binding("h", "collapse_node", "Collapse", show=False),
     Binding("l", "expand_node", "Expand", show=False),
+    Binding(
+      "tab", "toggle_branch", "Toggle branch", show=False, priority=True
+    ),
     Binding("g", "cursor_top", "Top", show=False),
     Binding("G", "cursor_bottom", "Bottom", show=False),
     Binding("B", "branch_conversation", "Branch", show=True),
@@ -236,7 +239,7 @@ class BushwackApp(App):
     if node and node.is_expanded:
       node.collapse()
     elif node and node.parent:
-      tree.cursor_node = node.parent
+      tree.select_node(node.parent)
     self._set_selected_from_node(tree.cursor_node)
 
   def action_expand_node(self) -> None:
@@ -245,13 +248,24 @@ class BushwackApp(App):
     if node and node.children and not node.is_expanded:
       node.expand()
     elif node and node.children:
-      tree.cursor_node = node.children[0]
+      tree.select_node(node.children[0])
     self._set_selected_from_node(tree.cursor_node)
+
+  def action_toggle_branch(self) -> None:
+    tree = self.query_one("#conversation_tree", Tree)
+    node = tree.cursor_node
+    if node and node.children:
+      if self._branch_is_expanded(node):
+        self._collapse_branch(node)
+      else:
+        self._expand_branch(node)
+      tree.select_node(node)
+      self._set_selected_from_node(node)
 
   def action_cursor_top(self) -> None:
     tree = self.query_one("#conversation_tree", Tree)
     if tree.root.children:
-      tree.cursor_node = tree.root.children[0]
+      tree.select_node(tree.root.children[0])
       self._set_selected_from_node(tree.cursor_node)
 
   def action_cursor_bottom(self) -> None:
@@ -263,7 +277,7 @@ class BushwackApp(App):
       return find_last(target.children[-1])
 
     if tree.root.children:
-      tree.cursor_node = find_last(tree.root.children[-1])
+      tree.select_node(find_last(tree.root.children[-1]))
       self._set_selected_from_node(tree.cursor_node)
 
   def action_branch_conversation(self) -> None:
@@ -334,6 +348,7 @@ class BushwackApp(App):
       "Navigation:",
       "  j/k or arrows  Move selection",
       "  h/l            Collapse/expand",
+      "  Tab           Toggle whole branch",
       "  g / G          Jump to top/bottom",
       "",
       "Actions:",
@@ -371,11 +386,8 @@ class BushwackApp(App):
   def _focus_on_uuid(self, tree: Tree, uuid: str) -> None:
     node = self._node_lookup.get(uuid)
     if node:
-      tree.cursor_node = node
-      parent = node.parent
-      while parent:
-        parent.expand()
-        parent = parent.parent
+      self._expand_node_path(node)
+      tree.select_node(node)
       self._set_selected_from_node(node)
       tree.scroll_to_node(node, animate=False)
     else:
@@ -384,13 +396,43 @@ class BushwackApp(App):
   def _focus_first_child(self, tree: Tree) -> None:
     if tree.root.children:
       first_child = tree.root.children[0]
-      tree.cursor_node = first_child
+      tree.select_node(first_child)
       self._set_selected_from_node(first_child)
       tree.scroll_to_node(first_child, animate=False)
 
   def _set_selected_from_node(self, node: Optional[TreeNode]) -> None:
     if node and isinstance(node.data, ConversationNodeData):
       self._selected_uuid = node.data.conversation.uuid
+
+  def _expand_node_path(self, node: TreeNode) -> None:
+    path: List[TreeNode] = []
+    current: Optional[TreeNode] = node
+
+    while current is not None:
+      path.append(current)
+      current = current.parent
+
+    for ancestor in reversed(path):
+      ancestor.expand()
+
+  def _branch_is_expanded(self, node: TreeNode) -> bool:
+    if not node.is_expanded:
+      return False
+    return any(child.is_expanded for child in node.children) or bool(node.children)
+
+  def _expand_branch(self, node: TreeNode) -> None:
+    stack: List[TreeNode] = [node]
+    while stack:
+      current = stack.pop()
+      current.expand()
+      stack.extend(reversed(current.children))
+
+  def _collapse_branch(self, node: TreeNode) -> None:
+    stack: List[TreeNode] = [node]
+    while stack:
+      current = stack.pop()
+      stack.extend(current.children)
+      current.collapse()
 
   def _build_previews(
     self, conversations: List[ConversationFile]
