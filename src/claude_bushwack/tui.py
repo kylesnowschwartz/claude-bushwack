@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from rich.text import Text
@@ -31,8 +32,23 @@ class ConversationNodeData:
 
   conversation: ConversationFile
   preview: str
+  summary: str = ''
+  created_at: Optional[datetime] = None
+  message_count: int = 0
+  git_branch: Optional[str] = None
   is_root: bool = False
   is_orphaned: bool = False
+
+
+@dataclass
+class ConversationDisplayData:
+  """Metadata extracted from a conversation file for tree display."""
+
+  preview: str = ''
+  summary: str = ''
+  created_at: Optional[datetime] = None
+  message_count: int = 0
+  git_branch: Optional[str] = None
 
 
 class BushwackApp(App):
@@ -107,8 +123,8 @@ class BushwackApp(App):
         )
         scope = "current project"
 
-      previews = self._build_previews(conversations)
-      self.populate_tree(tree, conversations, previews)
+      display_data = self._build_display_data(conversations)
+      self.populate_tree(tree, conversations, display_data)
 
       target_uuid = focus_uuid or self._selected_uuid
       if target_uuid:
@@ -126,7 +142,7 @@ class BushwackApp(App):
     self,
     tree: Tree,
     conversations: List[ConversationFile],
-    previews: Dict[str, str],
+    display_data: Dict[str, ConversationDisplayData],
   ) -> None:
     """Populate the tree widget with conversation data."""
     if not conversations:
@@ -143,7 +159,7 @@ class BushwackApp(App):
         tree.root,
         root,
         children_dict,
-        previews,
+        display_data,
         is_root=True,
       )
 
@@ -166,7 +182,7 @@ class BushwackApp(App):
           orphaned_node,
           conv,
           children_dict,
-          previews,
+          display_data,
           is_orphaned=True,
         )
 
@@ -177,32 +193,66 @@ class BushwackApp(App):
     parent_node: TreeNode,
     conversation: ConversationFile,
     children_dict: Dict[str, List[ConversationFile]],
-    previews: Dict[str, str],
+    display_data: Dict[str, ConversationDisplayData],
     *,
     is_root: bool = False,
     is_orphaned: bool = False,
   ) -> TreeNode:
     """Add a conversation node to the tree."""
     uuid_display = f"{conversation.uuid[:8]}..."
-    modified_display = conversation.last_modified.strftime("%Y-%m-%d %H:%M")
-    preview = previews.get(conversation.uuid, "")
-    preview_display = self._format_preview(preview)
+    modified_display = self._format_timestamp(conversation.last_modified)
+    display_info = display_data.get(
+      conversation.uuid, ConversationDisplayData()
+    )
+    created_display = (
+      self._format_timestamp(display_info.created_at)
+      if display_info.created_at
+      else "--"
+    )
+    branch_display = self._format_branch(display_info.git_branch)
+    message_display = f"msgs:{display_info.message_count}"
+    preview_formatted = self._format_preview(display_info.preview)
+    summary_formatted = (
+      self._format_summary(display_info.summary)
+      if display_info.summary
+      else ""
+    )
+    if summary_formatted:
+      description = summary_formatted
+      if (
+        display_info.preview
+        and preview_formatted
+        and preview_formatted != summary_formatted
+      ):
+        description = f"{summary_formatted} · {preview_formatted}"
+    else:
+      description = preview_formatted
     child_count = len(children_dict.get(conversation.uuid, []))
     child_indicator = f"[{child_count}]"
     label_text = Text.assemble(
       uuid_display,
       " ",
-      modified_display,
+      f"M:{modified_display}",
+      " ",
+      f"C:{created_display}",
       " ",
       child_indicator,
       " | ",
-      preview_display,
+      f"B:{branch_display}",
+      " ",
+      message_display,
+      " | ",
+      description,
     )
     label_text.no_wrap = True
 
     node_data = ConversationNodeData(
       conversation=conversation,
-      preview=preview_display,
+      preview=display_info.preview,
+      summary=display_info.summary,
+      created_at=display_info.created_at,
+      message_count=display_info.message_count,
+      git_branch=display_info.git_branch,
       is_root=is_root,
       is_orphaned=is_orphaned,
     )
@@ -218,7 +268,7 @@ class BushwackApp(App):
           node,
           child,
           children_dict,
-          previews,
+          display_data,
         )
 
     return node
@@ -434,18 +484,26 @@ class BushwackApp(App):
       stack.extend(current.children)
       current.collapse()
 
-  def _build_previews(
+  def _build_display_data(
     self, conversations: List[ConversationFile]
-  ) -> Dict[str, str]:
-    previews: Dict[str, str] = {}
+  ) -> Dict[str, ConversationDisplayData]:
+    display_data: Dict[str, ConversationDisplayData] = {}
     for conversation in conversations:
-      previews[conversation.uuid] = self._extract_first_user_message(conversation)
-    return previews
+      display_data[conversation.uuid] = self._extract_display_data(conversation)
+    return display_data
 
-  def _extract_first_user_message(self, conversation: ConversationFile) -> str:
+  def _extract_display_data(
+    self, conversation: ConversationFile
+  ) -> ConversationDisplayData:
+    summary = ""
+    preview = ""
+    created_at: Optional[datetime] = None
+    git_branch: Optional[str] = None
+    message_count = 0
+
     try:
       with open(conversation.path, "r", encoding="utf-8") as handle:
-        for raw_line in handle:
+        for line_number, raw_line in enumerate(handle):
           line = raw_line.strip()
           if not line:
             continue
@@ -454,21 +512,94 @@ class BushwackApp(App):
           except json.JSONDecodeError:
             continue
 
-          message = data.get("message")
-          if isinstance(message, dict) and message.get("role") == "user":
-            if data.get("isMeta") is True:
-              continue
-            text = self._coerce_text(message)
-            if text and not self._is_session_hook(text):
-              return text
+          if line_number == 0 and data.get("type") == "summary":
+            summary_value = data.get("summary")
+            if isinstance(summary_value, str):
+              summary = summary_value
+            continue
 
-          if data.get("role") == "user":
+          if created_at is None:
+            timestamp_value = data.get("timestamp")
+            parsed_timestamp = self._parse_timestamp(timestamp_value)
+            if parsed_timestamp is not None:
+              created_at = parsed_timestamp
+
+          if git_branch is None:
+            branch_value = data.get("gitBranch")
+            if isinstance(branch_value, str):
+              branch_stripped = branch_value.strip()
+              if branch_stripped:
+                git_branch = branch_stripped
+
+          message = data.get("message")
+          if isinstance(message, dict):
+            message_count += 1
+            if (
+              not preview
+              and message.get("role") == "user"
+              and data.get("isMeta") is not True
+            ):
+              text = self._coerce_text(message)
+              if text and not self._is_session_hook(text):
+                preview = text
+            continue
+
+          if data.get("role") == "user" and not preview:
             text = self._coerce_text(data)
             if text and not self._is_session_hook(text):
-              return text
+              preview = text
+
+          if "message" in data and not isinstance(message, dict):
+            message_count += 1
     except OSError:
-      return ""
-    return ""
+      return ConversationDisplayData()
+
+    return ConversationDisplayData(
+      preview=preview,
+      summary=summary,
+      created_at=created_at,
+      message_count=message_count,
+      git_branch=git_branch,
+    )
+
+  @staticmethod
+  def _parse_timestamp(value: object) -> Optional[datetime]:
+    if not isinstance(value, str):
+      return None
+
+    timestamp = value.strip()
+    if not timestamp:
+      return None
+
+    if timestamp.endswith("Z"):
+      timestamp = f"{timestamp[:-1]}+00:00"
+
+    try:
+      return datetime.fromisoformat(timestamp)
+    except ValueError:
+      return None
+
+  @staticmethod
+  def _format_timestamp(value: datetime) -> str:
+    if value.tzinfo is not None:
+      try:
+        localized = value.astimezone()
+      except ValueError:
+        localized = value
+    else:
+      localized = value
+    return localized.strftime("%m-%d %H:%M")
+
+  @staticmethod
+  def _format_branch(branch: Optional[str]) -> str:
+    if not branch:
+      return "-"
+    trimmed = branch.strip()
+    if not trimmed:
+      return "-"
+    if len(trimmed) <= 16:
+      return trimmed
+    return f"{trimmed[:13]}..."
 
   @staticmethod
   def _coerce_text(message: Dict[str, object]) -> str:
@@ -530,10 +661,18 @@ class BushwackApp(App):
 
   @staticmethod
   def _format_preview(preview: str) -> str:
-    if not preview:
-      return "[no user message]"
+    return BushwackApp._format_snippet(preview, "[no user message]")
 
-    compressed = " ".join(preview.split())
+  @staticmethod
+  def _format_summary(summary: str) -> str:
+    return BushwackApp._format_snippet(summary, "[no summary]")
+
+  @staticmethod
+  def _format_snippet(value: str, placeholder: str) -> str:
+    if not value:
+      return placeholder
+
+    compressed = " ".join(value.split())
     if len(compressed) <= _PREVIEW_LIMIT:
       return compressed
     return f"{compressed[:_PREVIEW_LIMIT - 3]}..."
