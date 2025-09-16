@@ -1,8 +1,12 @@
 """TUI interface for claude-bushwack using Textual."""
 
 import json
+import os
+import shutil
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+
+from rich.text import Text
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -18,7 +22,7 @@ from .exceptions import (
   InvalidUUIDError,
 )
 
-_PREVIEW_LIMIT = 60
+_PREVIEW_LIMIT = 30
 
 
 @dataclass
@@ -43,6 +47,8 @@ class BushwackApp(App):
     Binding("G", "cursor_bottom", "Bottom", show=False),
     Binding("B", "branch_conversation", "Branch", show=True),
     Binding("shift+b", "branch_conversation", "Branch", show=False),
+    Binding("O", "open_conversation", "Open", show=True),
+    Binding("shift+o", "open_conversation", "Open", show=False),
     Binding("r", "refresh_tree", "Refresh", show=True),
     Binding("p", "toggle_scope", "Scope", show=True),
     Binding("question_mark", "show_help", "Help", show=False),
@@ -178,7 +184,18 @@ class BushwackApp(App):
     modified_display = conversation.last_modified.strftime("%Y-%m-%d %H:%M")
     preview = previews.get(conversation.uuid, "")
     preview_display = self._format_preview(preview)
-    label = f"{uuid_display} {modified_display} | {preview_display}"
+    child_count = len(children_dict.get(conversation.uuid, []))
+    child_indicator = f"[{child_count}]"
+    label_text = Text.assemble(
+      uuid_display,
+      " ",
+      modified_display,
+      " ",
+      child_indicator,
+      " | ",
+      preview_display,
+    )
+    label_text.no_wrap = True
 
     node_data = ConversationNodeData(
       conversation=conversation,
@@ -187,7 +204,7 @@ class BushwackApp(App):
       is_orphaned=is_orphaned,
     )
 
-    node = parent_node.add(label, data=node_data)
+    node = parent_node.add(label_text, data=node_data)
     self._node_lookup[conversation.uuid] = node
 
     if conversation.uuid in children_dict:
@@ -282,6 +299,26 @@ class BushwackApp(App):
       announce_scope=False,
     )
 
+  def action_open_conversation(self) -> None:
+    tree = self.query_one("#conversation_tree", Tree)
+    node = tree.cursor_node
+    if not node or not isinstance(node.data, ConversationNodeData):
+      self.show_status("Select a conversation to open")
+      return
+
+    conversation = node.data.conversation
+    executable = shutil.which("claude")
+    if not executable:
+      self.show_status("claude CLI not found on PATH")
+      return
+
+    command = ["claude", "--resume", conversation.uuid]
+
+    try:
+      os.execv(executable, command)
+    except OSError as error:  # pragma: no cover - defensive fallback
+      self.show_status(f"Open failed: {error}")
+
   def action_refresh_tree(self) -> None:
     self.show_status("Refreshing conversations...")
     self.load_conversations(focus_uuid=self._selected_uuid)
@@ -301,6 +338,7 @@ class BushwackApp(App):
       "",
       "Actions:",
       "  B              Branch selected conversation",
+      "  O              Open in claude CLI",
       "  r              Refresh conversations",
       "  p              Toggle project scope",
       "  q              Quit",
@@ -339,6 +377,7 @@ class BushwackApp(App):
         parent.expand()
         parent = parent.parent
       self._set_selected_from_node(node)
+      tree.scroll_to_node(node, animate=False)
     else:
       self._focus_first_child(tree)
 
@@ -347,6 +386,7 @@ class BushwackApp(App):
       first_child = tree.root.children[0]
       tree.cursor_node = first_child
       self._set_selected_from_node(first_child)
+      tree.scroll_to_node(first_child, animate=False)
 
   def _set_selected_from_node(self, node: Optional[TreeNode]) -> None:
     if node and isinstance(node.data, ConversationNodeData):
@@ -367,30 +407,64 @@ class BushwackApp(App):
           line = raw_line.strip()
           if not line:
             continue
-          data = json.loads(line)
-          role = data.get("role")
-          if role != "user":
+          try:
+            data = json.loads(line)
+          except json.JSONDecodeError:
             continue
-          text = self._coerce_text(data)
-          if text:
-            return text
-    except (OSError, json.JSONDecodeError):
+
+          message = data.get("message")
+          if isinstance(message, dict) and message.get("role") == "user":
+            if data.get("isMeta") is True:
+              continue
+            text = self._coerce_text(message)
+            if text and not self._is_session_hook(text):
+              return text
+
+          if data.get("role") == "user":
+            text = self._coerce_text(data)
+            if text and not self._is_session_hook(text):
+              return text
+    except OSError:
       return ""
     return ""
 
   @staticmethod
   def _coerce_text(message: Dict[str, object]) -> str:
-    text_field = message.get("text")
-    candidate = ""
+    if not isinstance(message, dict):
+      return ""
 
+    content = message.get("content")
+    segments: List[str] = []
+
+    if isinstance(content, list):
+      for item in content:
+        if isinstance(item, str):
+          segments.append(item)
+          continue
+        if not isinstance(item, dict):
+          continue
+        if item.get("type") == "text":
+          text_value = item.get("text")
+          if isinstance(text_value, str):
+            segments.append(text_value)
+            continue
+        text_value = item.get("text") or item.get("content")
+        if isinstance(text_value, str):
+          segments.append(text_value)
+      if segments:
+        return " ".join(segments)
+
+    if isinstance(content, str):
+      return content
+
+    text_field = message.get("text")
     if isinstance(text_field, str):
-      candidate = text_field
-    elif isinstance(text_field, dict):
+      return text_field
+    if isinstance(text_field, dict):
       inner_text = text_field.get("text")
       if isinstance(inner_text, str):
-        candidate = inner_text
-    elif isinstance(text_field, list):
-      segments: List[str] = []
+        return inner_text
+    if isinstance(text_field, list):
       for item in text_field:
         if isinstance(item, str):
           segments.append(item)
@@ -398,19 +472,19 @@ class BushwackApp(App):
           segment_text = item.get("text") or item.get("content")
           if isinstance(segment_text, str):
             segments.append(segment_text)
-      candidate = " ".join(segments)
+      if segments:
+        return " ".join(segments)
 
-    if not candidate and "content" in message:
-      content = message.get("content")
-      if isinstance(content, str):
-        candidate = content
+    body = message.get("body")
+    if isinstance(body, str):
+      return body
 
-    if not candidate and "body" in message:
-      body = message.get("body")
-      if isinstance(body, str):
-        candidate = body
+    return ""
 
-    return candidate
+  @staticmethod
+  def _is_session_hook(text: str) -> bool:
+    stripped = text.lstrip()
+    return stripped.startswith("<session-start-hook>")
 
   @staticmethod
   def _format_preview(preview: str) -> str:
