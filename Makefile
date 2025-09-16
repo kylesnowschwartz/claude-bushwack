@@ -1,4 +1,4 @@
-.PHONY: install test lint format clean run
+.PHONY: install test lint format clean run tui dev
 
 install:
 	poetry install
