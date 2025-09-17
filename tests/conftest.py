@@ -13,9 +13,8 @@ import pytest
 
 from claude_bushwack.core import ClaudeConversationManager
 
-BACKUP_PROJECT_PATH = Path(
-  '/Users/kyle/backups/claude/projects/-Users-kyle-Code-my-projects-claude-bushwack'
-)
+TESTS_DIR = Path(__file__).parent
+SAMPLE_CONVERSATION_PATH = TESTS_DIR / 'assets' / 'sample_conversation.jsonl'
 
 
 @dataclass
@@ -154,11 +153,12 @@ def populated_manager(
 
 
 @pytest.fixture
-def backup_conversation(tmp_path: Path) -> Path:
-  """Copy a real conversation file from the backup location for parsing tests."""
-  source = next(iter(sorted(BACKUP_PROJECT_PATH.glob('*.jsonl'))))
-  target = tmp_path / source.name
-  shutil.copy2(source, target)
+def sample_conversation(tmp_path: Path) -> Path:
+  """Provide a deterministic conversation file for parsing tests."""
+  if not SAMPLE_CONVERSATION_PATH.exists():
+    raise FileNotFoundError(f'Missing sample conversation: {SAMPLE_CONVERSATION_PATH}')
+  target = tmp_path / 'sample_conversation.jsonl'
+  shutil.copy2(SAMPLE_CONVERSATION_PATH, target)
   return target
 
 

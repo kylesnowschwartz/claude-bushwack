@@ -150,7 +150,10 @@ def test_refresh_tree_updates_status(bushwack_app: BushwackApp, monkeypatch: pyt
 
 def test_formatting_helpers(bushwack_app: BushwackApp):
   timestamp = datetime(2024, 1, 1, 12, 34, tzinfo=timezone.utc)
-  assert bushwack_app._format_timestamp(timestamp)
+  expected_timestamp = timestamp.astimezone().strftime('%m-%d %H:%M')
+  assert bushwack_app._format_timestamp(timestamp) == expected_timestamp
+  naive_timestamp = datetime(2024, 1, 1, 12, 34)
+  assert bushwack_app._format_timestamp(naive_timestamp) == '01-01 12:34'
   assert bushwack_app._format_branch('feature/super-long-branch') == 'feature/super...'
   assert bushwack_app._format_preview('preview text') == 'preview text'
   assert bushwack_app._format_summary('summary goes here') == 'summary goes here'
@@ -166,13 +169,13 @@ def test_coerce_text_variants(bushwack_app: BushwackApp):
   assert bushwack_app._coerce_text(message) == 'fallback'
 
 
-def test_extract_display_data_from_backup(
+def test_extract_display_data_from_sample(
   bushwack_app: BushwackApp,
-  backup_conversation: Path,
+  sample_conversation: Path,
 ):
   conversation = ConversationFile(
-    path=backup_conversation,
-    uuid=backup_conversation.stem,
+    path=sample_conversation,
+    uuid=sample_conversation.stem,
     project_dir='-Users-kyle-Code-my-projects-claude-bushwack',
     project_path='/Users/kyle/Code/my-projects/claude-bushwack',
     last_modified=datetime.now(tz=timezone.utc),

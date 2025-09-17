@@ -1,0 +1,4 @@
+{"type": "summary", "summary": "Investigate formatting helpers"}
+{"uuid": "11111111-aaaa-bbbb-cccc-111111111111", "parentUuid": null, "type": "user", "timestamp": "2024-08-10T09:15:00Z", "gitBranch": "feature/refine-formatting", "message": {"role": "user", "content": [{"type": "text", "text": "Review the TUI timestamp rendering"}]}}
+{"uuid": "22222222-bbbb-cccc-dddd-222222222222", "parentUuid": "11111111-aaaa-bbbb-cccc-111111111111", "type": "assistant", "timestamp": "2024-08-10T09:16:00Z", "gitBranch": "feature/refine-formatting", "message": {"role": "assistant", "content": [{"type": "text", "text": "Formatting helper now trims long branches."}]}}
+{"uuid": "33333333-cccc-dddd-eeee-333333333333", "parentUuid": "22222222-bbbb-cccc-dddd-222222222222", "type": "user", "timestamp": "2024-08-10T09:17:30Z", "gitBranch": "feature/refine-formatting", "message": {"role": "user", "content": [{"type": "text", "text": "Confirm preview removes duplicate spaces."}]}}
