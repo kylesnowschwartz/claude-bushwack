@@ -25,6 +25,17 @@ from .exceptions import (
 
 _PREVIEW_LIMIT = 30
 
+_COLUMN_LAYOUT = [
+  ('uuid', 12, 'UUID'),
+  ('modified', 12, 'Modified'),
+  ('created', 12, 'Created'),
+  ('children', 8, 'Branches'),
+  ('messages', 6, 'Msgs'),
+  ('branch', 18, 'Git Branch'),
+]
+
+_HEADER_PREFIX = '    '
+
 
 @dataclass
 class ConversationNodeData:
@@ -55,23 +66,21 @@ class BushwackApp(App):
   """Main TUI application for claude-bushwack."""
 
   BINDINGS = [
-    Binding("j", "cursor_down", "Down", show=False),
-    Binding("k", "cursor_up", "Up", show=False),
-    Binding("h", "collapse_node", "Collapse", show=False),
-    Binding("l", "expand_node", "Expand", show=False),
-    Binding(
-      "tab", "toggle_branch", "Toggle branch", show=False, priority=True
-    ),
-    Binding("g", "cursor_top", "Top", show=False),
-    Binding("G", "cursor_bottom", "Bottom", show=False),
-    Binding("B", "branch_conversation", "Branch", show=True),
-    Binding("shift+b", "branch_conversation", "Branch", show=False),
-    Binding("O", "open_conversation", "Open", show=True),
-    Binding("shift+o", "open_conversation", "Open", show=False),
-    Binding("r", "refresh_tree", "Refresh", show=True),
-    Binding("p", "toggle_scope", "Scope", show=True),
-    Binding("question_mark", "show_help", "Help", show=False),
-    Binding("q", "quit", "Quit", show=True),
+    Binding('j', 'cursor_down', 'Down', show=False),
+    Binding('k', 'cursor_up', 'Up', show=False),
+    Binding('h', 'collapse_node', 'Collapse', show=False),
+    Binding('l', 'expand_node', 'Expand', show=False),
+    Binding('tab', 'toggle_branch', 'Toggle branch', show=False, priority=True),
+    Binding('g', 'cursor_top', 'Top', show=False),
+    Binding('G', 'cursor_bottom', 'Bottom', show=False),
+    Binding('B', 'branch_conversation', 'Branch', show=True),
+    Binding('shift+b', 'branch_conversation', 'Branch', show=False),
+    Binding('O', 'open_conversation', 'Open', show=True),
+    Binding('shift+o', 'open_conversation', 'Open', show=False),
+    Binding('r', 'refresh_tree', 'Refresh', show=True),
+    Binding('p', 'toggle_scope', 'Scope', show=True),
+    Binding('question_mark', 'show_help', 'Help', show=False),
+    Binding('q', 'quit', 'Quit', show=True),
   ]
 
   def __init__(self) -> None:
@@ -84,30 +93,31 @@ class BushwackApp(App):
 
   def compose(self) -> ComposeResult:
     """Create child widgets for the app."""
-    conversation_tree = Tree("Conversations", id="conversation_tree")
+    header = Static('', id='column_headers')
+    yield header
+    conversation_tree = Tree('Conversations', id='conversation_tree')
     conversation_tree.show_root = True
     conversation_tree.show_guides = True
     yield conversation_tree
-    yield Static("", id="status_line")
+    yield Static('', id='status_line')
     yield Footer()
 
   def on_mount(self) -> None:
     """Called when the app starts."""
-    tree = self.query_one("#conversation_tree", Tree)
+    tree = self.query_one('#conversation_tree', Tree)
     tree.focus()
     tree.root.expand()
+    self._update_column_headers()
     self.load_conversations()
 
   def load_conversations(
-    self,
-    focus_uuid: Optional[str] = None,
-    *,
-    announce_scope: bool = True,
+    self, focus_uuid: Optional[str] = None, *, announce_scope: bool = True
   ) -> None:
     """Load conversations and populate the tree."""
-    tree = self.query_one("#conversation_tree", Tree)
+    self._update_column_headers()
+    tree = self.query_one('#conversation_tree', Tree)
     tree.clear()
-    tree.root.label = "Conversations"
+    tree.root.label = 'Conversations'
     tree.root.expand()
     self._node_lookup = {}
 
@@ -116,12 +126,12 @@ class BushwackApp(App):
         conversations = self.conversation_manager.find_all_conversations(
           all_projects=True
         )
-        scope = "all projects"
+        scope = 'all projects'
       else:
         conversations = self.conversation_manager.find_all_conversations(
           current_project_only=True
         )
-        scope = "current project"
+        scope = 'current project'
 
       display_data = self._build_display_data(conversations)
       self.populate_tree(tree, conversations, display_data)
@@ -133,10 +143,10 @@ class BushwackApp(App):
         self._focus_first_child(tree)
 
       if announce_scope:
-        self.show_status(f"Scope: {scope}")
+        self.show_status(f'Scope: {scope}')
     except Exception as exc:  # pragma: no cover - defensive logging
-      tree.root.add_leaf(f"Error loading conversations: {exc}")
-      self.show_status("Unable to load conversations")
+      tree.root.add_leaf(f'Error loading conversations: {exc}')
+      self.show_status('Unable to load conversations')
 
   def populate_tree(
     self,
@@ -146,7 +156,7 @@ class BushwackApp(App):
   ) -> None:
     """Populate the tree widget with conversation data."""
     if not conversations:
-      tree.root.add_leaf("No conversations found")
+      tree.root.add_leaf('No conversations found')
       tree.root.expand()
       return
 
@@ -156,34 +166,21 @@ class BushwackApp(App):
 
     for root in sorted(roots, key=lambda conv: conv.last_modified, reverse=True):
       self._add_conversation_to_tree(
-        tree.root,
-        root,
-        children_dict,
-        display_data,
-        is_root=True,
+        tree.root, root, children_dict, display_data, is_root=True
       )
 
     orphaned = [
       conv
       for conv in conversations
-      if conv.parent_uuid
-      and conv.parent_uuid not in {c.uuid for c in conversations}
+      if conv.parent_uuid and conv.parent_uuid not in {c.uuid for c in conversations}
     ]
 
     if orphaned:
-      orphaned_node = tree.root.add("Orphaned branches")
+      orphaned_node = tree.root.add('Orphaned branches')
       orphaned_node.expand()
-      for conv in sorted(
-        orphaned,
-        key=lambda item: item.last_modified,
-        reverse=True,
-      ):
+      for conv in sorted(orphaned, key=lambda item: item.last_modified, reverse=True):
         self._add_conversation_to_tree(
-          orphaned_node,
-          conv,
-          children_dict,
-          display_data,
-          is_orphaned=True,
+          orphaned_node, conv, children_dict, display_data, is_orphaned=True
         )
 
     tree.root.expand()
@@ -199,23 +196,21 @@ class BushwackApp(App):
     is_orphaned: bool = False,
   ) -> TreeNode:
     """Add a conversation node to the tree."""
-    uuid_display = f"{conversation.uuid[:8]}..."
+    uuid_display = f'{conversation.uuid[:8]}...'
     modified_display = self._format_timestamp(conversation.last_modified)
-    display_info = display_data.get(
-      conversation.uuid, ConversationDisplayData()
-    )
+    display_info = display_data.get(conversation.uuid, ConversationDisplayData())
     created_display = (
       self._format_timestamp(display_info.created_at)
       if display_info.created_at
-      else "--"
+      else '--'
     )
     branch_display = self._format_branch(display_info.git_branch)
-    message_display = f"msgs:{display_info.message_count}"
+    message_display = (
+      str(display_info.message_count) if display_info.message_count else '0'
+    )
     preview_formatted = self._format_preview(display_info.preview)
     summary_formatted = (
-      self._format_summary(display_info.summary)
-      if display_info.summary
-      else ""
+      self._format_summary(display_info.summary) if display_info.summary else ''
     )
     if summary_formatted:
       description = summary_formatted
@@ -224,27 +219,20 @@ class BushwackApp(App):
         and preview_formatted
         and preview_formatted != summary_formatted
       ):
-        description = f"{summary_formatted} · {preview_formatted}"
+        description = f'{summary_formatted} · {preview_formatted}'
     else:
       description = preview_formatted
     child_count = len(children_dict.get(conversation.uuid, []))
-    child_indicator = f"[{child_count}]"
-    label_text = Text.assemble(
-      uuid_display,
-      " ",
-      f"M:{modified_display}",
-      " ",
-      f"C:{created_display}",
-      " ",
-      child_indicator,
-      " | ",
-      f"B:{branch_display}",
-      " ",
-      message_display,
-      " | ",
-      description,
-    )
-    label_text.no_wrap = True
+    children_display = str(child_count) if child_count else '-'
+    column_values = {
+      'uuid': uuid_display,
+      'modified': modified_display,
+      'created': created_display,
+      'children': children_display,
+      'messages': message_display,
+      'branch': branch_display,
+    }
+    label_text = self._format_columns(column_values, description)
 
     node_data = ConversationNodeData(
       conversation=conversation,
@@ -264,27 +252,22 @@ class BushwackApp(App):
       for child in sorted(
         children_dict[conversation.uuid], key=lambda item: item.last_modified
       ):
-        self._add_conversation_to_tree(
-          node,
-          child,
-          children_dict,
-          display_data,
-        )
+        self._add_conversation_to_tree(node, child, children_dict, display_data)
 
     return node
 
   def action_cursor_down(self) -> None:
-    tree = self.query_one("#conversation_tree", Tree)
+    tree = self.query_one('#conversation_tree', Tree)
     tree.action_cursor_down()
     self._set_selected_from_node(tree.cursor_node)
 
   def action_cursor_up(self) -> None:
-    tree = self.query_one("#conversation_tree", Tree)
+    tree = self.query_one('#conversation_tree', Tree)
     tree.action_cursor_up()
     self._set_selected_from_node(tree.cursor_node)
 
   def action_collapse_node(self) -> None:
-    tree = self.query_one("#conversation_tree", Tree)
+    tree = self.query_one('#conversation_tree', Tree)
     node = tree.cursor_node
     if node and node.is_expanded:
       node.collapse()
@@ -293,7 +276,7 @@ class BushwackApp(App):
     self._set_selected_from_node(tree.cursor_node)
 
   def action_expand_node(self) -> None:
-    tree = self.query_one("#conversation_tree", Tree)
+    tree = self.query_one('#conversation_tree', Tree)
     node = tree.cursor_node
     if node and node.children and not node.is_expanded:
       node.expand()
@@ -302,7 +285,7 @@ class BushwackApp(App):
     self._set_selected_from_node(tree.cursor_node)
 
   def action_toggle_branch(self) -> None:
-    tree = self.query_one("#conversation_tree", Tree)
+    tree = self.query_one('#conversation_tree', Tree)
     node = tree.cursor_node
     if node and node.children:
       if self._branch_is_expanded(node):
@@ -313,13 +296,13 @@ class BushwackApp(App):
       self._set_selected_from_node(node)
 
   def action_cursor_top(self) -> None:
-    tree = self.query_one("#conversation_tree", Tree)
+    tree = self.query_one('#conversation_tree', Tree)
     if tree.root.children:
       tree.select_node(tree.root.children[0])
       self._set_selected_from_node(tree.cursor_node)
 
   def action_cursor_bottom(self) -> None:
-    tree = self.query_one("#conversation_tree", Tree)
+    tree = self.query_one('#conversation_tree', Tree)
 
     def find_last(target: TreeNode) -> TreeNode:
       if not target.children or not target.is_expanded:
@@ -331,10 +314,10 @@ class BushwackApp(App):
       self._set_selected_from_node(tree.cursor_node)
 
   def action_branch_conversation(self) -> None:
-    tree = self.query_one("#conversation_tree", Tree)
+    tree = self.query_one('#conversation_tree', Tree)
     node = tree.cursor_node
     if not node or not isinstance(node.data, ConversationNodeData):
-      self.show_status("Select a conversation to branch")
+      self.show_status('Select a conversation to branch')
       return
 
     conversation = node.data.conversation
@@ -348,67 +331,64 @@ class BushwackApp(App):
       ConversationNotFoundError,
       InvalidUUIDError,
     ) as error:
-      self.show_status(f"Branch failed: {error}")
+      self.show_status(f'Branch failed: {error}')
       return
     except Exception as error:  # pragma: no cover - defensive logging
-      self.show_status(f"Unexpected error: {error}")
+      self.show_status(f'Unexpected error: {error}')
       return
 
     self.show_status(
-      f"Branched {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}..."
+      f'Branched {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}...'
     )
     self._selected_uuid = new_conversation.uuid
-    self.load_conversations(
-      focus_uuid=new_conversation.uuid,
-      announce_scope=False,
-    )
+    self.load_conversations(focus_uuid=new_conversation.uuid, announce_scope=False)
 
   def action_open_conversation(self) -> None:
-    tree = self.query_one("#conversation_tree", Tree)
+    tree = self.query_one('#conversation_tree', Tree)
     node = tree.cursor_node
     if not node or not isinstance(node.data, ConversationNodeData):
-      self.show_status("Select a conversation to open")
+      self.show_status('Select a conversation to open')
       return
 
     conversation = node.data.conversation
-    executable = shutil.which("claude")
+    executable = shutil.which('claude')
     if not executable:
-      self.show_status("claude CLI not found on PATH")
+      self.show_status('claude CLI not found on PATH')
       return
 
-    command = ["claude", "--resume", conversation.uuid]
+    command = ['claude', '--resume', conversation.uuid]
 
     try:
       os.execv(executable, command)
     except OSError as error:  # pragma: no cover - defensive fallback
-      self.show_status(f"Open failed: {error}")
+      self.show_status(f'Open failed: {error}')
 
   def action_refresh_tree(self) -> None:
-    self.show_status("Refreshing conversations...")
+    self.show_status('Refreshing conversations...')
     self.load_conversations(focus_uuid=self._selected_uuid)
 
   def action_toggle_scope(self) -> None:
     self.show_all_projects = not self.show_all_projects
-    scope = "all projects" if self.show_all_projects else "current project"
-    self.show_status(f"Switched to {scope}")
+    scope = 'all projects' if self.show_all_projects else 'current project'
+    self.show_status(f'Switched to {scope}')
     self.load_conversations(focus_uuid=self._selected_uuid)
 
   def action_show_help(self) -> None:
     help_lines = [
-      "Navigation:",
-      "  j/k or arrows  Move selection",
-      "  h/l            Collapse/expand",
-      "  Tab           Toggle whole branch",
-      "  g / G          Jump to top/bottom",
-      "",
-      "Actions:",
-      "  B              Branch selected conversation",
-      "  O              Open in claude CLI",
-      "  r              Refresh conversations",
-      "  p              Toggle project scope",
-      "  q              Quit",
+      'Navigation:',
+      '  j/k or arrows  Move selection',
+      '  h/l            Collapse/expand',
+      '  Tab           Toggle whole branch',
+      '  g / G          Jump to top/bottom',
+      '',
+      'Actions:',
+      '  B              Branch selected conversation',
+      '  O              Open in claude CLI',
+      '  r              Refresh conversations',
+      '  p              Toggle project scope',
+      '  q              Quit',
     ]
-    self.notify("\n".join(help_lines))
+    self.notify('\n'.join(help_lines))
 
   def action_quit(self) -> None:
     self.exit()
@@ -420,15 +400,15 @@ class BushwackApp(App):
     self._set_selected_from_node(event.node)
 
   def show_status(self, message: str, duration: float = 3.0) -> None:
-    status_line = self.query_one("#status_line", Static)
+    status_line = self.query_one('#status_line', Static)
     status_line.update(message)
     if self._status_timer:
       self._status_timer.stop()
     self._status_timer = self.set_timer(duration, self._clear_status)
 
   def _clear_status(self) -> None:
-    status_line = self.query_one("#status_line", Static)
-    status_line.update("")
+    status_line = self.query_one('#status_line', Static)
+    status_line.update('')
     if self._status_timer:
       self._status_timer.stop()
     self._status_timer = None
@@ -495,14 +475,14 @@ class BushwackApp(App):
   def _extract_display_data(
     self, conversation: ConversationFile
   ) -> ConversationDisplayData:
-    summary = ""
-    preview = ""
+    summary = ''
+    preview = ''
     created_at: Optional[datetime] = None
     git_branch: Optional[str] = None
     message_count = 0
 
     try:
-      with open(conversation.path, "r", encoding="utf-8") as handle:
+      with open(conversation.path, 'r', encoding='utf-8') as handle:
         for line_number, raw_line in enumerate(handle):
           line = raw_line.strip()
           if not line:
@@ -512,44 +492,44 @@ class BushwackApp(App):
           except json.JSONDecodeError:
             continue
 
-          if line_number == 0 and data.get("type") == "summary":
-            summary_value = data.get("summary")
+          if line_number == 0 and data.get('type') == 'summary':
+            summary_value = data.get('summary')
             if isinstance(summary_value, str):
               summary = summary_value
             continue
 
           if created_at is None:
-            timestamp_value = data.get("timestamp")
+            timestamp_value = data.get('timestamp')
             parsed_timestamp = self._parse_timestamp(timestamp_value)
             if parsed_timestamp is not None:
               created_at = parsed_timestamp
 
           if git_branch is None:
-            branch_value = data.get("gitBranch")
+            branch_value = data.get('gitBranch')
             if isinstance(branch_value, str):
               branch_stripped = branch_value.strip()
               if branch_stripped:
                 git_branch = branch_stripped
 
-          message = data.get("message")
+          message = data.get('message')
           if isinstance(message, dict):
             message_count += 1
             if (
               not preview
-              and message.get("role") == "user"
-              and data.get("isMeta") is not True
+              and message.get('role') == 'user'
+              and data.get('isMeta') is not True
             ):
               text = self._coerce_text(message)
               if text and not self._is_session_hook(text):
                 preview = text
             continue
 
-          if data.get("role") == "user" and not preview:
+          if data.get('role') == 'user' and not preview:
             text = self._coerce_text(data)
             if text and not self._is_session_hook(text):
               preview = text
 
-          if "message" in data and not isinstance(message, dict):
+          if 'message' in data and not isinstance(message, dict):
             message_count += 1
     except OSError:
       return ConversationDisplayData()
@@ -571,8 +551,8 @@ class BushwackApp(App):
     if not timestamp:
       return None
 
-    if timestamp.endswith("Z"):
-      timestamp = f"{timestamp[:-1]}+00:00"
+    if timestamp.endswith('Z'):
+      timestamp = f'{timestamp[:-1]}+00:00'
 
     try:
       return datetime.fromisoformat(timestamp)
@@ -588,25 +568,25 @@ class BushwackApp(App):
         localized = value
     else:
       localized = value
-    return localized.strftime("%m-%d %H:%M")
+    return localized.strftime('%m-%d %H:%M')
 
   @staticmethod
   def _format_branch(branch: Optional[str]) -> str:
     if not branch:
-      return "-"
+      return '-'
     trimmed = branch.strip()
     if not trimmed:
-      return "-"
-    if len(trimmed) <= 16:
+      return '-'
+    if len(trimmed) <= 32:
       return trimmed
-    return f"{trimmed[:13]}..."
+    return f'{trimmed[:29]}...'
 
   @staticmethod
   def _coerce_text(message: Dict[str, object]) -> str:
     if not isinstance(message, dict):
-      return ""
+      return ''
 
-    content = message.get("content")
+    content = message.get('content')
     segments: List[str] = []
 
     if isinstance(content, list):
@@ -616,25 +596,25 @@ class BushwackApp(App):
           continue
         if not isinstance(item, dict):
           continue
-        if item.get("type") == "text":
-          text_value = item.get("text")
+        if item.get('type') == 'text':
+          text_value = item.get('text')
           if isinstance(text_value, str):
             segments.append(text_value)
             continue
-        text_value = item.get("text") or item.get("content")
+        text_value = item.get('text') or item.get('content')
         if isinstance(text_value, str):
           segments.append(text_value)
       if segments:
-        return " ".join(segments)
+        return ' '.join(segments)
 
     if isinstance(content, str):
       return content
 
-    text_field = message.get("text")
+    text_field = message.get('text')
     if isinstance(text_field, str):
       return text_field
     if isinstance(text_field, dict):
-      inner_text = text_field.get("text")
+      inner_text = text_field.get('text')
       if isinstance(inner_text, str):
         return inner_text
     if isinstance(text_field, list):
@@ -642,42 +622,84 @@ class BushwackApp(App):
         if isinstance(item, str):
           segments.append(item)
         elif isinstance(item, dict):
-          segment_text = item.get("text") or item.get("content")
+          segment_text = item.get('text') or item.get('content')
           if isinstance(segment_text, str):
             segments.append(segment_text)
       if segments:
-        return " ".join(segments)
+        return ' '.join(segments)
 
-    body = message.get("body")
+    body = message.get('body')
     if isinstance(body, str):
       return body
 
-    return ""
+    return ''
 
   @staticmethod
   def _is_session_hook(text: str) -> bool:
     stripped = text.lstrip()
-    return stripped.startswith("<session-start-hook>")
+    return stripped.startswith('<session-start-hook>')
 
   @staticmethod
   def _format_preview(preview: str) -> str:
-    return BushwackApp._format_snippet(preview, "[no user message]")
+    return BushwackApp._format_snippet(preview, '[no user message]')
 
   @staticmethod
   def _format_summary(summary: str) -> str:
-    return BushwackApp._format_snippet(summary, "[no summary]")
+    return BushwackApp._format_snippet(summary, '[no summary]')
 
   @staticmethod
   def _format_snippet(value: str, placeholder: str) -> str:
     if not value:
       return placeholder
 
-    compressed = " ".join(value.split())
+    compressed = ' '.join(value.split())
     if len(compressed) <= _PREVIEW_LIMIT:
       return compressed
-    return f"{compressed[:_PREVIEW_LIMIT - 3]}..."
+    return f'{compressed[:_PREVIEW_LIMIT - 3]}...'
+
+  def _format_columns(
+    self, column_values: Dict[str, str], trailing: str, *, prefix: str = ''
+  ) -> Text:
+    segments = []
+    for key, width, _ in _COLUMN_LAYOUT:
+      value = column_values.get(key, '')
+      segments.append(self._pad_column(value, width))
+
+    line = f"{prefix}{'  '.join(segments)}"
+    if trailing:
+      line = f'{line}  {trailing}' if line else trailing
+
+    text = Text(line)
+    text.no_wrap = True
+    return text
+
+  @staticmethod
+  def _pad_column(value: str, width: int) -> str:
+    if width <= 0:
+      return value
+
+    content = value or ''
+    if len(content) <= width:
+      return content.ljust(width)
+
+    if width <= 3:
+      return content[:width]
+
+    return f'{content[:width - 3]}...'
+
+  def _update_column_headers(self) -> None:
+    header = self.query_one('#column_headers', Static)
+    header.update(self._render_column_headers())
+
+  def _render_column_headers(self) -> Text:
+    values = {key: label for key, _, label in _COLUMN_LAYOUT}
+    header_text = self._format_columns(
+      values, 'Summary / Preview', prefix=_HEADER_PREFIX
+    )
+    header_text.stylize('bold')
+    return header_text
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
   app = BushwackApp()
   app.run()
