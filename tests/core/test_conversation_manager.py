@@ -25,15 +25,12 @@ def test_path_round_trip(manager: ClaudeConversationManager) -> None:
 
 
 def test_get_and_set_parent_uuid(
-  manager: ClaudeConversationManager,
-  conversation_factory,
+  manager: ClaudeConversationManager, conversation_factory
 ) -> None:
   """Parent UUID metadata is readable and writeable."""
   parent_uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
   file_path = conversation_factory(
-    'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
-    parent_uuid=parent_uuid,
-    summary=None,
+    'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', parent_uuid=parent_uuid, summary=None
   )
 
   assert manager._get_parent_uuid(file_path) == parent_uuid
@@ -44,8 +41,7 @@ def test_get_and_set_parent_uuid(
 
 
 def test_find_all_conversations_current_project(
-  populated_manager: ClaudeConversationManager,
-  monkeypatch: pytest.MonkeyPatch,
+  populated_manager: ClaudeConversationManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """find_all_conversations respects the current project scope."""
   monkeypatch.setattr(
@@ -59,12 +55,13 @@ def test_find_all_conversations_current_project(
     '22222222-2222-2222-2222-222222222222',
     '33333333-3333-3333-3333-333333333333',
   }
-  assert conversations == sorted(conversations, key=lambda c: c.last_modified, reverse=True)
+  assert conversations == sorted(
+    conversations, key=lambda c: c.last_modified, reverse=True
+  )
 
 
 def test_find_all_conversations_filters(
-  populated_manager: ClaudeConversationManager,
-  monkeypatch: pytest.MonkeyPatch,
+  populated_manager: ClaudeConversationManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """Project filters and all-projects flags return expected results."""
   monkeypatch.setattr(
@@ -90,7 +87,9 @@ def test_find_all_conversations_filters(
   assert len(all_projects) == len(filtered)
 
 
-def test_find_conversation_success(populated_manager: ClaudeConversationManager) -> None:
+def test_find_conversation_success(
+  populated_manager: ClaudeConversationManager,
+) -> None:
   """find_conversation resolves exact and partial UUIDs."""
   exact = populated_manager.find_conversation('11111111-1111-1111-1111-111111111111')
   assert exact.uuid == '11111111-1111-1111-1111-111111111111'
@@ -100,8 +99,7 @@ def test_find_conversation_success(populated_manager: ClaudeConversationManager)
 
 
 def test_find_conversation_errors(
-  populated_manager: ClaudeConversationManager,
-  conversation_factory,
+  populated_manager: ClaudeConversationManager, conversation_factory
 ) -> None:
   """find_conversation raises on invalid, missing, or ambiguous IDs."""
   with pytest.raises(InvalidUUIDError):
@@ -117,8 +115,7 @@ def test_find_conversation_errors(
 
 
 def test_branch_conversation_to_current_project(
-  populated_manager: ClaudeConversationManager,
-  monkeypatch: pytest.MonkeyPatch,
+  populated_manager: ClaudeConversationManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """branch_conversation creates a copy and injects a parent UUID."""
   monkeypatch.setattr(
@@ -132,14 +129,11 @@ def test_branch_conversation_to_current_project(
   assert new_conversation.path.exists()
   assert new_conversation.project_path == '/Users/kyle/Code/my-projects/claude-bushwack'
   # First line should now reference the parent
-  assert (
-    populated_manager._get_parent_uuid(new_conversation.path) == source_uuid
-  )
+  assert populated_manager._get_parent_uuid(new_conversation.path) == source_uuid
 
 
 def test_branch_conversation_custom_target(
-  populated_manager: ClaudeConversationManager,
-  tmp_path: Path,
+  populated_manager: ClaudeConversationManager, tmp_path: Path
 ) -> None:
   """An explicit project path should be encoded and used."""
   target_path = tmp_path / 'custom-project'
@@ -148,10 +142,14 @@ def test_branch_conversation_custom_target(
   )
   expected_dir = populated_manager._path_to_project_dir(target_path)
   assert new_conversation.project_dir == expected_dir
-  assert new_conversation.path.parent == populated_manager.claude_projects_dir / expected_dir
+  assert (
+    new_conversation.path.parent == populated_manager.claude_projects_dir / expected_dir
+  )
 
 
-def test_branch_conversation_error_propagation(populated_manager: ClaudeConversationManager, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_branch_conversation_error_propagation(
+  populated_manager: ClaudeConversationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
   """Underlying errors are wrapped in BranchingError."""
   monkeypatch.setattr(
     populated_manager,
@@ -168,24 +166,32 @@ def test_build_conversation_tree(populated_manager: ClaudeConversationManager) -
   roots, children = populated_manager.build_conversation_tree(conversations)
   root_ids = {conv.uuid for conv in roots}
   assert root_ids == {'11111111-1111-1111-1111-111111111111'}
-  assert children['11111111-1111-1111-1111-111111111111'][0].parent_uuid == '11111111-1111-1111-1111-111111111111'
+  assert (
+    children['11111111-1111-1111-1111-111111111111'][0].parent_uuid
+    == '11111111-1111-1111-1111-111111111111'
+  )
 
 
-def test_get_conversation_ancestry(populated_manager: ClaudeConversationManager) -> None:
+def test_get_conversation_ancestry(
+  populated_manager: ClaudeConversationManager,
+) -> None:
   """get_conversation_ancestry walks the parent chain until the root."""
-  ancestry = populated_manager.get_conversation_ancestry('22222222-2222-2222-2222-222222222222')
+  ancestry = populated_manager.get_conversation_ancestry(
+    '22222222-2222-2222-2222-222222222222'
+  )
   assert [item.uuid for item in ancestry] == [
     '11111111-1111-1111-1111-111111111111',
     '22222222-2222-2222-2222-222222222222',
   ]
 
-  orphan = populated_manager.get_conversation_ancestry('33333333-3333-3333-3333-333333333333')
+  orphan = populated_manager.get_conversation_ancestry(
+    '33333333-3333-3333-3333-333333333333'
+  )
   assert [item.uuid for item in orphan] == ['33333333-3333-3333-3333-333333333333']
 
 
 def test_get_conversation_ancestry_handles_cycles(
-  populated_manager: ClaudeConversationManager,
-  conversation_factory,
+  populated_manager: ClaudeConversationManager, conversation_factory
 ) -> None:
   """Cycles should not result in an infinite loop."""
   cyclic_uuid = '44444444-4444-4444-4444-444444444444'

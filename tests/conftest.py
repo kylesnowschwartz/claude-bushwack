@@ -123,10 +123,7 @@ def populated_manager(
   # Root conversation without parent
   root_uuid = '11111111-1111-1111-1111-111111111111'
   conversation_factory(
-    root_uuid,
-    summary='Root summary',
-    preview_text='Root preview',
-    git_branch='main',
+    root_uuid, summary='Root summary', preview_text='Root preview', git_branch='main'
   )
 
   # Child conversation referencing root

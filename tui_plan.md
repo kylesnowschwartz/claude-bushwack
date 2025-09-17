@@ -80,3 +80,10 @@ notes: |
 - Ensure conversation labels continue to show a truncated initial user prompt for
   quick identification, adjusting truncation length / formatting as needed for
   readability in combination with new depth indicators. ✅
+
+
+## Phase 3 Polish
+- Select newly created branch node in tree view in tui
+- <tab> opens all the nodes of that branch not just the first depth
+- The last node in our tree is an error: `Error loading conversations: property 'cursor_node' of 'Tree' object has no setter`
+- The `claude --resume` native function brings up a conversation picker with: Modified, Created, # of Msgs, Git branch, And Message summary it would be great to include those in our tree meta data as well

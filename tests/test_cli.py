@@ -13,7 +13,10 @@ from click.testing import CliRunner
 
 from claude_bushwack.cli import main
 from claude_bushwack.core import ConversationFile
-from claude_bushwack.exceptions import AmbiguousSessionIDError, ConversationNotFoundError
+from claude_bushwack.exceptions import (
+  AmbiguousSessionIDError,
+  ConversationNotFoundError,
+)
 
 
 @pytest.fixture
@@ -79,7 +82,9 @@ def test_main_help(runner: CliRunner) -> None:
   assert 'Claude Bushwack' in result.output
 
 
-def test_list_command_default_scope(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+def test_list_command_default_scope(
+  monkeypatch: pytest.MonkeyPatch, runner: CliRunner
+) -> None:
   convo = _conversation('11111111-1111-1111-1111-111111111111')
   manager = _RecordingManager([convo])
   monkeypatch.setattr('claude_bushwack.cli.ClaudeConversationManager', lambda: manager)
@@ -102,7 +107,9 @@ def test_list_command_tree(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -
   assert child.uuid[:8] in result.output
 
 
-def test_branch_command_success(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+def test_branch_command_success(
+  monkeypatch: pytest.MonkeyPatch, runner: CliRunner
+) -> None:
   new = _conversation(
     '33333333-3333-3333-3333-333333333333',
     parent_uuid='22222222-2222-2222-2222-222222222222',
@@ -122,7 +129,9 @@ def test_branch_command_success(monkeypatch: pytest.MonkeyPatch, runner: CliRunn
   assert new.uuid in result.output
 
 
-def test_branch_command_errors(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+def test_branch_command_errors(
+  monkeypatch: pytest.MonkeyPatch, runner: CliRunner
+) -> None:
   class _ErrorManager(_RecordingManager):
     def branch_conversation(self, session_id: str, target_project_path=None):
       raise ConversationNotFoundError(session_id)
@@ -162,7 +171,9 @@ def test_tree_command(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> Non
   assert '📍' in result.output
 
 
-def test_tui_command_success(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+def test_tui_command_success(
+  monkeypatch: pytest.MonkeyPatch, runner: CliRunner
+) -> None:
   class FakeApp:
     def run(self):
       self.ran = True
@@ -173,8 +184,11 @@ def test_tui_command_success(monkeypatch: pytest.MonkeyPatch, runner: CliRunner)
   assert result.exit_code == 0
 
 
-def test_tui_command_missing_textual(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -> None:
+def test_tui_command_missing_textual(
+  monkeypatch: pytest.MonkeyPatch, runner: CliRunner
+) -> None:
   import claude_bushwack as package
+
   fake_module = types.ModuleType('claude_bushwack.tui')
 
   def _getattr(name: str):
