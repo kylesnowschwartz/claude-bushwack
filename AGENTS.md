@@ -1,19 +1,19 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Source code lives under `src/claude_bushwack/`. The CLI entrypoint is `cli.py`, the branching logic is in `core.py`, UI widgets reside in `tui.py`, and shared errors are defined in `exceptions.py`. Tests mirror the package layout in `tests/`, with `test_cli.py` covering the command surface. Ancillary tooling (Makefile, Poetry config) sits at the repository root; keep new assets in `assets/` if introduced.
+Application code lives in `src/claude_bushwack/`: `cli.py` exposes the CLI surface, `core.py` holds conversation management, `tui.py` renders the Textual interface, and `exceptions.py` centralizes errors. Tests mirror this layout beneath `tests/`, with integration-style checks in `tests/tui/`. Deterministic fixtures and sample JSONL transcripts sit in `tests/assets/`; add new fixtures there so the suite stays self-contained.
 
 ## Build, Test, and Development Commands
-Install dependencies with `poetry install` or `make install`. Use `poetry run claude-bushwack` (or the short alias `poetry run cb`) to execute the CLI; append `tui` to launch the Textual interface. `make test` runs the full pytest suite via Poetry. `make lint` performs Ruff lint and format checks, while `make format` auto-formats and fixes lint violations. For a fresh dev setup, `make dev` installs main and dev dependencies.
+Run `poetry install` (or `make install`) to set up dependencies. Execute the CLI with `poetry run claude-bushwack` or the shorthand `poetry run cb`; append `tui` to launch the interface. `make test` drives the full pytest suite via Poetry, while `make lint` runs Ruff lint/format checks. Use `make format` to auto-apply Ruff fixes, and `make dev` for a full dev bootstrap.
 
 ## Coding Style & Naming Conventions
-All Python files target 2-space indentation and 88-character lines, enforced by Ruff (`pyproject.toml`). Prefer single quotes for strings and avoid trailing commas when formatting with `poetry run ruff format`. Follow standard Python naming: modules and packages in `snake_case`, classes in `PascalCase`, functions and variables in `snake_case`. Keep CLI command names concise and verbs first (e.g., `branch create`).
+Python modules use 2-space indentation and an 88-character width, enforced by Ruff. Prefer single quotes for strings and avoid trailing commas when formatting through `poetry run ruff format`. Follow standard naming: modules and packages in `snake_case`, classes in `PascalCase`, functions, variables, and fixtures in `snake_case`. Keep CLI verbs first (`branch create`) and surface-friendly.
 
 ## Testing Guidelines
-Write tests with pytest and place them beneath `tests/`, mirroring the package path. Name files `test_<module>.py` and functions `test_<behavior>`. When adding CLI scenarios, use fixtures to simulate command invocations and branch trees. Run `make test` locally before opening a pull request; add regression tests that cover new branching states or TUI behaviors.
+Write pytest tests that mirror the source tree (`tests/tui/test_bushwack_app.py`, etc.). Name files `test_<module>.py` and functions `test_<behavior>`. Use the provided fixtures in `tests/conftest.py`, including `conversation_factory` and the deterministic `sample_conversation` asset. Before commiting or completing a task, run `make test`; add regression coverage when introducing new TUI states or CLI flows.
 
 ## Commit & Pull Request Guidelines
-Prefer Conventional Commit prefixes (`feat:`, `fix:`, `docs:`). Start summaries with an imperative verb and keep them under 72 characters. For pull requests, include: overview of the change, testing evidence (`make test` output or screenshots for TUI updates), and links to related issues. Flag any CLI interface changes in the description so downstream scripts can be updated.
+Use Conventional Commits (`feat:`, `fix:`, `test:`, `docs:`) with imperative summaries under 72 characters. Group related changes into focused commits. PRs should summarize the change, link relevant issues, and include evidence of testing (command output or screenshots for TUI updates). Call out any CLI command additions or interface adjustments so downstream automation can keep pace.
 
-## Environment & Security Notes
-The project assumes Python 3.9+. Avoid committing API tokens or conversation transcripts; use `.env` files ignored by git. Review dependencies when adding new Textual or Rich extensions, and run `poetry lock` only when intentionally updating the lockfile.
+## Security & Configuration Tips
+Target Python 3.9+ (tested on 3.12). Do not commit tokens or live conversation transcripts; sanitize samples before storing them under `tests/assets/`. Regenerate `poetry.lock` only when deliberately updating dependencies, and review new Rich/Textual extensions for compatibility.
