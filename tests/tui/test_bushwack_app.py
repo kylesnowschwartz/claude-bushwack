@@ -11,7 +11,7 @@ import pytest
 
 from claude_bushwack.core import ConversationFile
 from claude_bushwack.exceptions import ConversationNotFoundError
-from claude_bushwack.tui import BushwackApp
+from claude_bushwack.tui import BushwackApp, ExternalCommand
 
 
 @pytest.fixture
@@ -145,6 +145,41 @@ def test_open_conversation_missing_cli(
 
   run_app(bushwack_app, _interaction)
   assert any('claude CLI not found on PATH' in message for message in messages)
+
+
+def test_open_conversation_exits_with_command(
+  monkeypatch: pytest.MonkeyPatch, bushwack_app: BushwackApp
+):
+  executable = '/usr/local/bin/claude'
+  monkeypatch.setattr('claude_bushwack.tui.shutil.which', lambda name: executable)
+  captured: List[ExternalCommand] = []
+  original_exit = bushwack_app.exit
+
+  def capture_exit(result=None):
+    if result is not None:
+      captured.append(result)
+    original_exit(result)
+
+  monkeypatch.setattr(bushwack_app, 'exit', capture_exit)
+
+  async def _interaction(pilot) -> None:
+    tree = bushwack_app.query_one('#conversation_tree')
+    await pilot.pause()
+    node = tree.root.children[0]
+    tree.select_node(node)
+    bushwack_app._set_selected_from_node(node)
+    bushwack_app.action_open_conversation()
+
+  run_app(bushwack_app, _interaction)
+  assert captured, 'Expected the app to exit with an external command'
+  command = captured[0]
+  assert isinstance(command, ExternalCommand)
+  assert command.executable == executable
+  assert command.args == [
+    'claude',
+    '--resume',
+    '11111111-1111-1111-1111-111111111111',
+  ]
 
 
 def test_refresh_tree_updates_status(

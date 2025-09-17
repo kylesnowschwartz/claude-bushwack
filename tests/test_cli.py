@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from datetime import datetime
@@ -178,10 +179,49 @@ def test_tui_command_success(
     def run(self):
       self.ran = True
 
-  fake_module = types.SimpleNamespace(BushwackApp=FakeApp)
+  fake_module = types.ModuleType('claude_bushwack.tui')
+  fake_module.BushwackApp = FakeApp
+  import claude_bushwack as package
+
   monkeypatch.setitem(sys.modules, 'claude_bushwack.tui', fake_module)
+  monkeypatch.setattr(package, 'tui', fake_module, raising=False)
   result = runner.invoke(main, ['tui'])
   assert result.exit_code == 0
+
+
+def test_tui_command_executes_external_command(
+  monkeypatch: pytest.MonkeyPatch, runner: CliRunner
+) -> None:
+  class FakeExternalCommand:
+    def __init__(self, executable: str, args: list[str]):
+      self.executable = executable
+      self.args = args
+
+  class FakeApp:
+    def run(self):
+      return FakeExternalCommand('/usr/local/bin/claude', ['claude', '--resume', 'abc'])
+
+  fake_module = types.ModuleType('claude_bushwack.tui')
+  fake_module.BushwackApp = FakeApp
+  fake_module.ExternalCommand = FakeExternalCommand
+
+  captured = {}
+
+  def fake_execv(executable, args):
+    captured['executable'] = executable
+    captured['args'] = args
+
+  import claude_bushwack as package
+
+  monkeypatch.setitem(sys.modules, 'claude_bushwack.tui', fake_module)
+  monkeypatch.setattr(package, 'tui', fake_module, raising=False)
+  monkeypatch.setattr(os, 'execv', fake_execv)
+
+  result = runner.invoke(main, ['tui'])
+  assert result.exit_code == 0
+  assert captured['executable'] == '/usr/local/bin/claude'
+  assert captured['args'] == ['claude', '--resume', 'abc']
+  assert 'Loading conversation...' in result.output
 
 
 def test_tui_command_missing_textual(

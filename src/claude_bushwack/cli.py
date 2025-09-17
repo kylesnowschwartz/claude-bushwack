@@ -1,5 +1,6 @@
 """CLI interface for claude-bushwack."""
 
+import os
 from pathlib import Path
 
 import click
@@ -252,10 +253,19 @@ def tree(session_id):
 def tui():
   """Launch the interactive TUI (Terminal User Interface)."""
   try:
-    from .tui import BushwackApp
+    from . import tui as tui_module
 
-    app = BushwackApp()
-    app.run()
+    app = tui_module.BushwackApp()
+    result = app.run()
+
+    external_command = getattr(tui_module, 'ExternalCommand', None)
+    if external_command and isinstance(result, external_command):
+      try:
+        console.print('Loading conversation...')
+        os.execv(result.executable, result.args)
+      except OSError as error:  # pragma: no cover - defensive fallback
+        console.print(f'[red]Failed to launch claude CLI: {error}[/red]')
+        raise click.ClickException(str(error))
   except ImportError as e:
     if 'textual' in str(e):
       console.print('[red]Error: Textual is not installed.[/red]')

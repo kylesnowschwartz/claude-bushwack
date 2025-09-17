@@ -62,6 +62,14 @@ class ConversationDisplayData:
   git_branch: Optional[str] = None
 
 
+@dataclass
+class ExternalCommand:
+  """Describes a command to execute after the TUI exits."""
+
+  executable: str
+  args: List[str]
+
+
 class BushwackApp(App):
   """Main TUI application for claude-bushwack."""
 
@@ -356,12 +364,11 @@ class BushwackApp(App):
       self.show_status('claude CLI not found on PATH')
       return
 
-    command = ['claude', '--resume', conversation.uuid]
-
-    try:
-      os.execv(executable, command)
-    except OSError as error:  # pragma: no cover - defensive fallback
-      self.show_status(f'Open failed: {error}')
+    command = ExternalCommand(
+      executable=executable,
+      args=['claude', '--resume', conversation.uuid],
+    )
+    self.exit(command)
 
   def action_refresh_tree(self) -> None:
     self.show_status('Refreshing conversations...')
