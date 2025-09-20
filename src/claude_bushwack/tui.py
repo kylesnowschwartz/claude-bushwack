@@ -226,6 +226,7 @@ class BushwackApp(App):
     Binding('G', 'cursor_bottom', 'Bottom', show=False),
     Binding('B', 'branch_conversation', 'Branch', show=True),
     Binding('shift+b', 'branch_conversation', 'Branch', show=False),
+    Binding('C', 'copy_move_conversation', 'Copy Move', show=True),
     Binding('O', 'open_conversation', 'Open', show=True),
     Binding('shift+o', 'open_conversation', 'Open', show=False),
     Binding('r', 'refresh_tree', 'Refresh', show=True),
@@ -461,19 +462,8 @@ class BushwackApp(App):
       return
 
     conversation = node.data.conversation
-    current_path = Path(conversation.project_path)
-
-    picker = DirectoryPickerScreen(
-      self.conversation_manager, current_project=current_path
-    )
-
-    def _complete(selection: Optional[Path]) -> None:
-      if selection is None:
-        self.show_status('Branch cancelled')
-        return
-      self._perform_branch(conversation, selection)
-
-    self.push_screen(picker, callback=_complete)
+    target_project = Path(conversation.project_path)
+    self._perform_branch(conversation, target_project)
 
   def _perform_branch(
     self, conversation: ConversationFile, target_project: Path
@@ -498,6 +488,55 @@ class BushwackApp(App):
     target_display = str(target)
     self.show_status(
       f'Branched {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}... ({target_display})'
+    )
+    self._selected_uuid = new_conversation.uuid
+    self.load_conversations(focus_uuid=new_conversation.uuid, announce_scope=False)
+
+  def action_copy_move_conversation(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    node = tree.cursor_node
+    if not node or not isinstance(node.data, ConversationNodeData):
+      self.show_status('Select a conversation to copy')
+      return
+
+    conversation = node.data.conversation
+    current_path = Path(conversation.project_path)
+
+    picker = DirectoryPickerScreen(
+      self.conversation_manager, current_project=current_path
+    )
+
+    def _complete(selection: Optional[Path]) -> None:
+      if selection is None:
+        self.show_status('Copy move cancelled')
+        return
+      self._perform_copy_move(conversation, selection)
+
+    self.push_screen(picker, callback=_complete)
+
+  def _perform_copy_move(
+    self, conversation: ConversationFile, target_project: Path
+  ) -> None:
+    target = Path(target_project)
+    try:
+      new_conversation = self.conversation_manager.copy_move_conversation(
+        conversation.uuid, target_project_path=target
+      )
+    except (
+      AmbiguousSessionIDError,
+      BranchingError,
+      ConversationNotFoundError,
+      InvalidUUIDError,
+    ) as error:
+      self.show_status(f'Copy move failed: {error}')
+      return
+    except Exception as error:  # pragma: no cover - defensive logging
+      self.show_status(f'Unexpected error: {error}')
+      return
+
+    target_display = str(target)
+    self.show_status(
+      f'Copied {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}... ({target_display})'
     )
     self._selected_uuid = new_conversation.uuid
     self.load_conversations(focus_uuid=new_conversation.uuid, announce_scope=False)

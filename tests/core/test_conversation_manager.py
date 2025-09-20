@@ -220,6 +220,82 @@ def test_branch_conversation_error_propagation(
     populated_manager.branch_conversation('1111')
 
 
+def test_copy_move_conversation_creates_root(
+  populated_manager: ClaudeConversationManager, tmp_path: Path
+) -> None:
+  """copy_move_conversation duplicates without retaining the parentUuid."""
+  target_path = tmp_path / 'relocated-project'
+  source_uuid = '22222222-2222-2222-2222-222222222222'
+
+  new_conversation = populated_manager.copy_move_conversation(
+    source_uuid, target_project_path=target_path
+  )
+
+  assert new_conversation.parent_uuid is None
+  assert populated_manager._get_parent_uuid(new_conversation.path) is None
+  assert new_conversation.project_path == str(target_path)
+
+  original = populated_manager.find_conversation(source_uuid)
+  assert original.path.exists(), 'Original conversation should remain in place'
+
+
+def test_copy_move_conversation_rewrites_project_metadata(
+  manager: ClaudeConversationManager,
+  conversation_factory: Callable[..., Path],
+  tmp_path: Path,
+) -> None:
+  """Metadata fields update to the new project and parentUuid is cleared."""
+  source_uuid = 'bbbbbbbb-2222-3333-4444-cccccccccccc'
+  old_project_dir = '-Users-kyle-Code-my-projects-claude-bushwack'
+  old_project_path = '/Users/kyle/Code/my-projects/claude-bushwack'
+
+  extra_line = SimpleNamespace(
+    type='metadata',
+    content={
+      'projectDir': old_project_dir,
+      'workspaceRoot': old_project_path,
+      'gitBranch': 'feature/original',
+      'metadata': {'projectDir': old_project_dir, 'workspaceRoot': old_project_path},
+    },
+  )
+
+  conversation_factory(
+    source_uuid,
+    parent_uuid='aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb',
+    summary='Source conversation',
+    git_branch='feature/original',
+    extra_lines=[extra_line],
+  )
+
+  target_project_path = tmp_path / 'copy-target'
+  (target_project_path / '.git' / 'refs' / 'heads').mkdir(parents=True)
+  (target_project_path / '.git' / 'HEAD').write_text('ref: refs/heads/main')
+
+  new_conversation = manager.copy_move_conversation(
+    source_uuid, target_project_path=target_project_path
+  )
+
+  with new_conversation.path.open('r', encoding='utf-8') as handle:
+    records = [json.loads(line) for line in handle if line.strip()]
+
+  project_dir = manager._path_to_project_dir(target_project_path)
+  assert manager._get_parent_uuid(new_conversation.path) is None
+
+  for record in records:
+    if 'gitBranch' in record:
+      assert record['gitBranch'] == 'main'
+    if 'projectDir' in record:
+      assert record['projectDir'] == project_dir
+    if 'workspaceRoot' in record:
+      assert record['workspaceRoot'] == str(target_project_path)
+    metadata = record.get('metadata')
+    if isinstance(metadata, dict):
+      if 'projectDir' in metadata:
+        assert metadata['projectDir'] == project_dir
+      if 'workspaceRoot' in metadata:
+        assert metadata['workspaceRoot'] == str(target_project_path)
+
+
 def test_build_conversation_tree(populated_manager: ClaudeConversationManager) -> None:
   """build_conversation_tree groups root and children entries."""
   conversations = populated_manager.find_all_conversations(all_projects=True)

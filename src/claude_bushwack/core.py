@@ -93,6 +93,28 @@ class ClaudeConversationManager:
     except (OSError, json.JSONDecodeError) as e:
       raise BranchingError(f'Failed to set parentUuid in JSONL file: {e}', e)
 
+  def _clear_parent_uuid_in_jsonl(self, conversation_file: Path) -> None:
+    """Remove the parentUuid from the first line of a JSONL conversation file."""
+    try:
+      with open(conversation_file, 'r') as f:
+        first_line = f.readline()
+        rest_of_file = f.read()
+
+      if not first_line:
+        return
+
+      data = json.loads(first_line)
+      if 'parentUuid' not in data:
+        return
+
+      data.pop('parentUuid', None)
+
+      with open(conversation_file, 'w') as f:
+        f.write(json.dumps(data) + '\n')
+        f.write(rest_of_file)
+    except (OSError, json.JSONDecodeError) as e:
+      raise BranchingError(f'Failed to clear parentUuid in JSONL file: {e}', e)
+
   def find_all_conversations(
     self,
     project_filter: Optional[str] = None,
@@ -238,58 +260,85 @@ class ClaudeConversationManager:
         BranchingError: If branching operation fails
     """
     try:
-      # Find the source conversation
       source_conversation = self.find_conversation(session_id)
 
-      # Determine target project directory
       if target_project_path is None:
         target_project_path = Path.cwd()
       else:
         target_project_path = Path(target_project_path)
 
-      target_project_dir = self._path_to_project_dir(target_project_path)
-      target_dir_path = self.claude_projects_dir / target_project_dir
-
-      # Create target directory if it doesn't exist
-      target_dir_path.mkdir(parents=True, exist_ok=True)
-
-      # Generate new UUID for the branch
-      new_uuid = str(uuid_module.uuid4())
-      new_filename = f'{new_uuid}.jsonl'
-      target_file_path = target_dir_path / new_filename
-
-      # Copy the conversation file
-      shutil.copy2(source_conversation.path, target_file_path)
-
-      # Set the parentUuid in the copied file
-      self._set_parent_uuid_in_jsonl(target_file_path, source_conversation.uuid)
-
-      source_project_path = Path(source_conversation.project_path)
-      git_branch = self._detect_git_branch(target_project_path)
-      self._rewrite_project_metadata(
-        target_file_path,
-        source_project_path,
-        target_project_path,
-        source_conversation.project_dir,
-        target_project_dir,
-        git_branch,
-      )
-
-      # Create and return new ConversationFile object
-      return ConversationFile(
-        path=target_file_path,
-        uuid=new_uuid,
-        project_dir=target_project_dir,
-        project_path=str(target_project_path),
-        last_modified=datetime.now(),
-        parent_uuid=source_conversation.uuid,
+      return self._duplicate_conversation(
+        source_conversation, target_project_path, parent_uuid=source_conversation.uuid
       )
 
     except (ConversationNotFoundError, AmbiguousSessionIDError, InvalidUUIDError):
-      # Re-raise conversation finding errors as-is
+      raise
+    except BranchingError:
       raise
     except Exception as e:
       raise BranchingError(f'Failed to branch conversation: {e}', e)
+
+  def copy_move_conversation(
+    self, session_id: str, target_project_path: Path
+  ) -> ConversationFile:
+    """Duplicate a conversation into the target project while keeping the original."""
+
+    try:
+      source_conversation = self.find_conversation(session_id)
+      target_path = Path(target_project_path)
+      return self._duplicate_conversation(
+        source_conversation, target_path, parent_uuid=None
+      )
+
+    except (ConversationNotFoundError, AmbiguousSessionIDError, InvalidUUIDError):
+      raise
+    except BranchingError:
+      raise
+    except Exception as e:
+      raise BranchingError(f'Failed to copy conversation: {e}', e)
+
+  def _duplicate_conversation(
+    self,
+    source_conversation: ConversationFile,
+    target_project_path: Path,
+    *,
+    parent_uuid: Optional[str],
+  ) -> ConversationFile:
+    target_project_path = Path(target_project_path)
+    target_project_dir = self._path_to_project_dir(target_project_path)
+    target_dir_path = self.claude_projects_dir / target_project_dir
+
+    target_dir_path.mkdir(parents=True, exist_ok=True)
+
+    new_uuid = str(uuid_module.uuid4())
+    target_file_path = target_dir_path / f'{new_uuid}.jsonl'
+
+    shutil.copy2(source_conversation.path, target_file_path)
+
+    if parent_uuid:
+      self._set_parent_uuid_in_jsonl(target_file_path, parent_uuid)
+    else:
+      self._clear_parent_uuid_in_jsonl(target_file_path)
+
+    source_project_path = Path(source_conversation.project_path)
+    git_branch = self._detect_git_branch(target_project_path)
+    self._rewrite_project_metadata(
+      target_file_path,
+      source_project_path,
+      target_project_path,
+      source_conversation.project_dir,
+      target_project_dir,
+      git_branch,
+    )
+
+    return ConversationFile(
+      path=target_file_path,
+      uuid=new_uuid,
+      project_dir=target_project_dir,
+      project_path=str(target_project_path),
+      last_modified=datetime.now(),
+      parent_uuid=parent_uuid,
+    )
 
   def _detect_git_branch(self, project_path: Path) -> Optional[str]:
     git_dir = project_path / '.git'

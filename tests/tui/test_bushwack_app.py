@@ -78,12 +78,59 @@ def test_branch_conversation_success(
   project_cwd: Path,
 ):
   new_uuid = '44444444-4444-4444-4444-444444444444'
+  source_uuid = '11111111-1111-1111-1111-111111111111'
+  expected_target = Path(populated_manager.find_conversation(source_uuid).project_path)
 
   def fake_branch(
     uuid: str, target_project_path: Optional[Path] = None
   ) -> ConversationFile:
-    assert uuid == '11111111-1111-1111-1111-111111111111'
-    assert target_project_path == project_cwd
+    assert uuid == source_uuid
+    assert target_project_path == expected_target
+    path = conversation_factory(new_uuid, parent_uuid=uuid, summary=None)
+    return ConversationFile(
+      path=path,
+      uuid=new_uuid,
+      project_dir=populated_manager._path_to_project_dir(expected_target),
+      project_path=str(expected_target),
+      last_modified=datetime.now(tz=timezone.utc),
+      parent_uuid=uuid,
+    )
+
+  bushwack_app.conversation_manager.branch_conversation = fake_branch
+  messages = capture_status(bushwack_app, monkeypatch)
+  branch_calls: list[tuple[str, Optional[Path]]] = []
+
+  def spy_branch(uuid: str, target_project_path: Optional[Path] = None):
+    branch_calls.append((uuid, target_project_path))
+    return fake_branch(uuid, target_project_path)
+
+  bushwack_app.conversation_manager.branch_conversation = spy_branch
+
+  async def _interaction(pilot) -> None:
+    tree = bushwack_app.query_one('#conversation_tree')
+    await pilot.pause()
+    node = tree.root.children[0]
+    tree.select_node(node)
+    bushwack_app._set_selected_from_node(node)
+    bushwack_app.action_branch_conversation()
+    await pilot.pause()
+
+  run_app(bushwack_app, _interaction)
+  expected_call = (source_uuid, expected_target)
+  assert branch_calls == [expected_call]
+  assert any('Branched' in message for message in messages)
+
+
+def test_branch_conversation_skips_picker(
+  monkeypatch: pytest.MonkeyPatch,
+  bushwack_app: BushwackApp,
+  conversation_factory,
+  populated_manager,
+  project_cwd: Path,
+) -> None:
+  new_uuid = '55555555-5555-5555-5555-555555555555'
+
+  def fake_branch(uuid: str, target_project_path: Optional[Path] = None):
     path = conversation_factory(new_uuid, parent_uuid=uuid, summary=None)
     return ConversationFile(
       path=path,
@@ -95,48 +142,11 @@ def test_branch_conversation_success(
     )
 
   bushwack_app.conversation_manager.branch_conversation = fake_branch
-  messages = capture_status(bushwack_app, monkeypatch)
+
   pushed: list[tuple[DirectoryPickerScreen, Optional[object]]] = []
 
   def capture_screen(screen, *args, **kwargs):
-    callback = kwargs.get('callback')
-    pushed.append((screen, callback))
-
-  monkeypatch.setattr(bushwack_app, 'push_screen', capture_screen)
-
-  async def _interaction(pilot) -> None:
-    tree = bushwack_app.query_one('#conversation_tree')
-    await pilot.pause()
-    node = tree.root.children[0]
-    tree.select_node(node)
-    bushwack_app._set_selected_from_node(node)
-    bushwack_app.action_branch_conversation()
-    await pilot.pause()
-    assert pushed, 'Expected the picker to be presented'
-    _, callback = pushed.pop(0)
-    assert callback is not None
-    callback(project_cwd)
-    await pilot.pause()
-
-  run_app(bushwack_app, _interaction)
-  assert any('Branched' in message for message in messages)
-
-
-def test_branch_conversation_opens_picker(
-  monkeypatch: pytest.MonkeyPatch, bushwack_app: BushwackApp
-) -> None:
-  branch_calls = []
-
-  def record_branch(*args, **kwargs):
-    branch_calls.append((args, kwargs))
-
-  bushwack_app.conversation_manager.branch_conversation = record_branch
-
-  pushed = []
-
-  def capture_screen(screen, *args, **kwargs):
-    callback = kwargs.get('callback')
-    pushed.append((screen, callback))
+    pushed.append((screen, kwargs.get('callback')))
 
   monkeypatch.setattr(bushwack_app, 'push_screen', capture_screen)
 
@@ -150,12 +160,7 @@ def test_branch_conversation_opens_picker(
     await pilot.pause()
 
   run_app(bushwack_app, _interaction)
-
-  assert pushed, 'Branch action should push the directory picker screen'
-  screen, callback = pushed[0]
-  assert isinstance(screen, DirectoryPickerScreen)
-  assert callable(callback)
-  assert branch_calls == []
+  assert pushed == []
 
 
 def test_branch_conversation_error(
@@ -166,13 +171,6 @@ def test_branch_conversation_error(
 
   bushwack_app.conversation_manager.branch_conversation = raise_error
   messages = capture_status(bushwack_app, monkeypatch)
-  pushed: list[tuple[DirectoryPickerScreen, Optional[object]]] = []
-
-  def capture_screen(screen, *args, **kwargs):
-    callback = kwargs.get('callback')
-    pushed.append((screen, callback))
-
-  monkeypatch.setattr(bushwack_app, 'push_screen', capture_screen)
 
   async def _interaction(pilot) -> None:
     tree = bushwack_app.query_one('#conversation_tree')
@@ -182,13 +180,133 @@ def test_branch_conversation_error(
     bushwack_app._set_selected_from_node(node)
     bushwack_app.action_branch_conversation()
     await pilot.pause()
+
+  run_app(bushwack_app, _interaction)
+  assert any('Branch failed' in message for message in messages)
+
+
+def test_copy_move_conversation_opens_picker(
+  monkeypatch: pytest.MonkeyPatch, bushwack_app: BushwackApp
+) -> None:
+  copy_calls: list[tuple[tuple, dict]] = []
+
+  def record_copy(*args, **kwargs):
+    copy_calls.append((args, kwargs))
+
+  bushwack_app.conversation_manager.copy_move_conversation = record_copy
+
+  pushed: list[tuple[DirectoryPickerScreen, Optional[object]]] = []
+
+  def capture_screen(screen, *args, **kwargs):
+    pushed.append((screen, kwargs.get('callback')))
+
+  monkeypatch.setattr(bushwack_app, 'push_screen', capture_screen)
+
+  async def _interaction(pilot) -> None:
+    tree = bushwack_app.query_one('#conversation_tree')
+    await pilot.pause()
+    node = tree.root.children[0]
+    tree.select_node(node)
+    bushwack_app._set_selected_from_node(node)
+    bushwack_app.action_copy_move_conversation()
+    await pilot.pause()
+
+  run_app(bushwack_app, _interaction)
+
+  assert pushed, 'Copy move action should push the directory picker screen'
+  screen, callback = pushed[0]
+  assert isinstance(screen, DirectoryPickerScreen)
+  assert callable(callback)
+  assert copy_calls == []
+
+
+def test_copy_move_conversation_success(
+  monkeypatch: pytest.MonkeyPatch,
+  bushwack_app: BushwackApp,
+  populated_manager,
+  conversation_factory,
+  tmp_path: Path,
+) -> None:
+  target_path = tmp_path / 'copy-target'
+  new_uuid = '66666666-6666-6666-6666-666666666666'
+
+  def fake_copy(uuid: str, target_project_path: Path) -> ConversationFile:
+    assert uuid == '11111111-1111-1111-1111-111111111111'
+    assert target_project_path == target_path
+    project_dir = populated_manager._path_to_project_dir(target_project_path)
+    destination = populated_manager.claude_projects_dir / project_dir
+    destination.mkdir(parents=True, exist_ok=True)
+    path = destination / f'{new_uuid}.jsonl'
+    conversation_factory(new_uuid, parent_uuid=None, summary=None)
+    default_dir = '-Users-kyle-Code-my-projects-claude-bushwack'
+    source_dir = populated_manager.claude_projects_dir / default_dir
+    (source_dir / f'{new_uuid}.jsonl').rename(path)
+    return ConversationFile(
+      path=path,
+      uuid=new_uuid,
+      project_dir=project_dir,
+      project_path=str(target_project_path),
+      last_modified=datetime.now(tz=timezone.utc),
+      parent_uuid=None,
+    )
+
+  bushwack_app.conversation_manager.copy_move_conversation = fake_copy
+  messages = capture_status(bushwack_app, monkeypatch)
+  pushed: list[tuple[DirectoryPickerScreen, Optional[object]]] = []
+
+  def capture_screen(screen, *args, **kwargs):
+    pushed.append((screen, kwargs.get('callback')))
+
+  monkeypatch.setattr(bushwack_app, 'push_screen', capture_screen)
+
+  async def _interaction(pilot) -> None:
+    tree = bushwack_app.query_one('#conversation_tree')
+    await pilot.pause()
+    node = tree.root.children[0]
+    tree.select_node(node)
+    bushwack_app._set_selected_from_node(node)
+    bushwack_app.action_copy_move_conversation()
+    await pilot.pause()
+    _, callback = pushed.pop(0)
+    assert callback is not None
+    callback(target_path)
+    await pilot.pause()
+
+  run_app(bushwack_app, _interaction)
+
+  assert any('Copied' in message for message in messages)
+
+
+def test_copy_move_conversation_error(
+  monkeypatch: pytest.MonkeyPatch, bushwack_app: BushwackApp
+):
+  def raise_error(uuid: str, target_project_path: Path) -> None:
+    raise ConversationNotFoundError(uuid)
+
+  bushwack_app.conversation_manager.copy_move_conversation = raise_error
+  messages = capture_status(bushwack_app, monkeypatch)
+  pushed: list[tuple[DirectoryPickerScreen, Optional[object]]] = []
+
+  def capture_screen(screen, *args, **kwargs):
+    pushed.append((screen, kwargs.get('callback')))
+
+  monkeypatch.setattr(bushwack_app, 'push_screen', capture_screen)
+
+  async def _interaction(pilot) -> None:
+    tree = bushwack_app.query_one('#conversation_tree')
+    await pilot.pause()
+    node = tree.root.children[0]
+    tree.select_node(node)
+    bushwack_app._set_selected_from_node(node)
+    bushwack_app.action_copy_move_conversation()
+    await pilot.pause()
     _, callback = pushed.pop(0)
     assert callback is not None
     callback(Path('/tmp/target'))
     await pilot.pause()
 
   run_app(bushwack_app, _interaction)
-  assert any('Branch failed' in message for message in messages)
+  assert any('Copy move failed' in message for message in messages)
 
 
 def test_open_conversation_missing_cli(
