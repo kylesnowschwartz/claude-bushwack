@@ -175,11 +175,7 @@ def test_open_conversation_exits_with_command(
   command = captured[0]
   assert isinstance(command, ExternalCommand)
   assert command.executable == executable
-  assert command.args == [
-    'claude',
-    '--resume',
-    '11111111-1111-1111-1111-111111111111',
-  ]
+  assert command.args == ['claude', '--resume', '11111111-1111-1111-1111-111111111111']
 
 
 def test_refresh_tree_updates_status(
@@ -194,6 +190,44 @@ def test_refresh_tree_updates_status(
 
   run_app(bushwack_app, _interaction)
   assert any('Refreshing conversations' in message for message in messages)
+
+
+def test_tree_description_labels(bushwack_app: BushwackApp):
+  async def _interaction(pilot) -> None:
+    tree = bushwack_app.query_one('#conversation_tree')
+    await pilot.pause()
+
+    stack = list(tree.root.children)
+    nodes = []
+    while stack:
+      current = stack.pop()
+      nodes.append(current)
+      stack.extend(reversed(current.children))
+
+    assert nodes, 'Expected populated tree'
+
+    summary_node = next(
+      (node for node in nodes if node.data and node.data.summary), None
+    )
+    assert summary_node is not None
+    summary_label = summary_node.label.plain
+    assert 'Summary:' in summary_label
+    assert 'User:' not in summary_label
+
+    preview_only_node = next(
+      (
+        node
+        for node in nodes
+        if node.data and not node.data.summary and node.data.preview
+      ),
+      None,
+    )
+    assert preview_only_node is not None
+    preview_label = preview_only_node.label.plain
+    assert 'User:' in preview_label
+    assert 'Summary:' not in preview_label
+
+  run_app(bushwack_app, _interaction)
 
 
 def test_formatting_helpers(bushwack_app: BushwackApp):

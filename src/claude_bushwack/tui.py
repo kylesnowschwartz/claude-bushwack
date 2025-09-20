@@ -1,7 +1,6 @@
 """TUI interface for claude-bushwack using Textual."""
 
 import json
-import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -216,20 +215,9 @@ class BushwackApp(App):
     message_display = (
       str(display_info.message_count) if display_info.message_count else '0'
     )
-    preview_formatted = self._format_preview(display_info.preview)
-    summary_formatted = (
-      self._format_summary(display_info.summary) if display_info.summary else ''
+    description = self._format_description(
+      summary=display_info.summary or '', preview=display_info.preview or ''
     )
-    if summary_formatted:
-      description = summary_formatted
-      if (
-        display_info.preview
-        and preview_formatted
-        and preview_formatted != summary_formatted
-      ):
-        description = f'{summary_formatted} · {preview_formatted}'
-    else:
-      description = preview_formatted
     child_count = len(children_dict.get(conversation.uuid, []))
     children_display = str(child_count) if child_count else '-'
     column_values = {
@@ -365,8 +353,7 @@ class BushwackApp(App):
       return
 
     command = ExternalCommand(
-      executable=executable,
-      args=['claude', '--resume', conversation.uuid],
+      executable=executable, args=['claude', '--resume', conversation.uuid]
     )
     self.exit(command)
 
@@ -654,6 +641,14 @@ class BushwackApp(App):
   def _format_summary(summary: str) -> str:
     return BushwackApp._format_snippet(summary, '[no summary]')
 
+  def _format_description(self, *, summary: str, preview: str) -> str:
+    if summary:
+      summary_formatted = self._format_summary(summary)
+      return f'Summary: {summary_formatted}'
+
+    preview_formatted = self._format_preview(preview)
+    return f'User: {preview_formatted}'
+
   @staticmethod
   def _format_snippet(value: str, placeholder: str) -> str:
     if not value:
@@ -701,7 +696,7 @@ class BushwackApp(App):
   def _render_column_headers(self) -> Text:
     values = {key: label for key, _, label in _COLUMN_LAYOUT}
     header_text = self._format_columns(
-      values, 'Summary / Preview', prefix=_HEADER_PREFIX
+      values, 'Summary or user message', prefix=_HEADER_PREFIX
     )
     header_text.stylize('bold')
     return header_text
