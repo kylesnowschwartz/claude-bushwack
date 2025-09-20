@@ -4,15 +4,18 @@ import json
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from rich.text import Text
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.screen import ModalScreen
 from textual.timer import Timer
-from textual.widgets import Footer, Static, Tree
+from textual.widgets import DirectoryTree, Footer, Input, Static, Tree
 from textual.widgets.tree import TreeNode
+from textual.widgets._directory_tree import DirEntry
 
 from .core import ClaudeConversationManager, ConversationFile
 from .exceptions import (
@@ -67,6 +70,147 @@ class ExternalCommand:
 
   executable: str
   args: List[str]
+
+
+class ProjectDirectoryTree(DirectoryTree):
+  """Directory tree constrained to Claude project folders."""
+
+  COMPONENT_CLASSES = DirectoryTree.COMPONENT_CLASSES
+  DEFAULT_CSS = DirectoryTree.DEFAULT_CSS
+
+  def __init__(
+    self,
+    manager: ClaudeConversationManager,
+    *,
+    name: Optional[str] = None,
+    id: Optional[str] = None,
+    classes: Optional[str] = None,
+    disabled: bool = False,
+  ) -> None:
+    super().__init__(
+      manager.claude_projects_dir, name=name, id=id, classes=classes, disabled=disabled
+    )
+    self._manager = manager
+    self._filter_text = ''
+    self.show_root = False
+
+  def set_filter(self, value: str) -> None:
+    normalized = value.strip().lower()
+    if normalized == self._filter_text:
+      return
+    self._filter_text = normalized
+    self.reload()
+
+  def filter_paths(self, paths):
+    directories = [path for path in paths if self._safe_is_dir(path)]
+    if not self._filter_text:
+      return directories
+    filtered = []
+    for path in directories:
+      label = self._format_label(path)
+      if self._filter_text in label.lower() or self._filter_text in path.name.lower():
+        filtered.append(path)
+    return filtered
+
+  def _populate_node(self, node: TreeNode, content) -> None:
+    node.remove_children()
+    for path in content:
+      if not self._safe_is_dir(path):
+        continue
+      label = self._format_label(path)
+      child = node.add(label, data=DirEntry(path), allow_expand=False)
+      child.allow_expand = False
+    node.expand()
+
+  def render_label(self, node: TreeNode, base_style, style) -> Text:  # type: ignore[override]
+    data = node.data
+    label = self._format_label(data.path) if data is not None else ''
+    return Text(label)
+
+  def decode_path(self, encoded_path: Path) -> Optional[Path]:
+    if encoded_path == self._manager.claude_projects_dir:
+      return None
+    try:
+      return self._manager._project_dir_to_path(encoded_path.name)
+    except Exception:
+      return None
+
+  def _format_label(self, path: Path) -> str:
+    decoded = self.decode_path(path)
+    return str(decoded) if decoded is not None else path.name
+
+
+class DirectoryPickerScreen(ModalScreen[Optional[Path]]):
+  """Modal for selecting a target Claude project directory."""
+
+  BINDINGS = [Binding('escape', 'cancel', 'Cancel', show=False)]
+
+  def __init__(
+    self,
+    manager: ClaudeConversationManager,
+    *,
+    current_project: Optional[Path] = None,
+    initial_filter: str = '',
+  ) -> None:
+    super().__init__()
+    self._manager = manager
+    self._current_project = current_project
+    self._initial_filter = initial_filter.strip()
+
+  def compose(self) -> ComposeResult:
+    yield Static('Select target project', id='picker_title')
+    yield Input(placeholder='Filter projects…', id='picker_filter')
+    yield ProjectDirectoryTree(self._manager, id='picker_tree')
+    yield Static('Enter to copy • Esc to cancel', id='picker_hint')
+
+  def on_mount(self) -> None:
+    filter_input = self.query_one('#picker_filter', Input)
+    tree = self.query_one(ProjectDirectoryTree)
+    tree.root.expand()
+    if self._initial_filter:
+      filter_input.value = self._initial_filter
+      tree.set_filter(self._initial_filter)
+    self.set_focus(filter_input)
+    if self._current_project is not None:
+      self._focus_project(tree, self._current_project)
+
+  def _focus_project(self, tree: ProjectDirectoryTree, project_path: Path) -> None:
+    encoded = self._manager._path_to_project_dir(project_path)
+    for node in tree.root.children:
+      data = node.data
+      if data is not None and getattr(data, 'path', None) is not None:
+        if data.path.name == encoded:
+          tree.select_node(node)
+          break
+
+  def on_input_changed(self, event: Input.Changed) -> None:
+    tree = self.query_one(ProjectDirectoryTree)
+    tree.set_filter(event.value)
+
+    def _select_first() -> None:
+      if tree.root.children:
+        tree.select_node(tree.root.children[0])
+
+    self.call_after_refresh(_select_first)
+
+  def on_directory_tree_directory_selected(
+    self, event: DirectoryTree.DirectorySelected
+  ) -> None:
+    event.stop()
+    tree = event.control
+    if not isinstance(tree, ProjectDirectoryTree):
+      self.dismiss(None)
+      return
+
+    decoded = tree.decode_path(event.path)
+    if decoded is None:
+      self.dismiss(None)
+      return
+
+    self.dismiss(decoded)
+
+  def action_cancel(self) -> None:
+    self.dismiss(None)
 
 
 class BushwackApp(App):
@@ -317,9 +461,27 @@ class BushwackApp(App):
       return
 
     conversation = node.data.conversation
+    current_path = Path(conversation.project_path)
+
+    picker = DirectoryPickerScreen(
+      self.conversation_manager, current_project=current_path
+    )
+
+    def _complete(selection: Optional[Path]) -> None:
+      if selection is None:
+        self.show_status('Branch cancelled')
+        return
+      self._perform_branch(conversation, selection)
+
+    self.push_screen(picker, callback=_complete)
+
+  def _perform_branch(
+    self, conversation: ConversationFile, target_project: Path
+  ) -> None:
+    target = Path(target_project)
     try:
       new_conversation = self.conversation_manager.branch_conversation(
-        conversation.uuid
+        conversation.uuid, target_project_path=target
       )
     except (
       AmbiguousSessionIDError,
@@ -333,8 +495,9 @@ class BushwackApp(App):
       self.show_status(f'Unexpected error: {error}')
       return
 
+    target_display = str(target)
     self.show_status(
-      f'Branched {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}...'
+      f'Branched {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}... ({target_display})'
     )
     self._selected_uuid = new_conversation.uuid
     self.load_conversations(focus_uuid=new_conversation.uuid, announce_scope=False)

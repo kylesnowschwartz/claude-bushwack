@@ -8,7 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .exceptions import (
   AmbiguousSessionIDError,
@@ -244,6 +244,8 @@ class ClaudeConversationManager:
       # Determine target project directory
       if target_project_path is None:
         target_project_path = Path.cwd()
+      else:
+        target_project_path = Path(target_project_path)
 
       target_project_dir = self._path_to_project_dir(target_project_path)
       target_dir_path = self.claude_projects_dir / target_project_dir
@@ -262,6 +264,17 @@ class ClaudeConversationManager:
       # Set the parentUuid in the copied file
       self._set_parent_uuid_in_jsonl(target_file_path, source_conversation.uuid)
 
+      source_project_path = Path(source_conversation.project_path)
+      git_branch = self._detect_git_branch(target_project_path)
+      self._rewrite_project_metadata(
+        target_file_path,
+        source_project_path,
+        target_project_path,
+        source_conversation.project_dir,
+        target_project_dir,
+        git_branch,
+      )
+
       # Create and return new ConversationFile object
       return ConversationFile(
         path=target_file_path,
@@ -277,6 +290,238 @@ class ClaudeConversationManager:
       raise
     except Exception as e:
       raise BranchingError(f'Failed to branch conversation: {e}', e)
+
+  def _detect_git_branch(self, project_path: Path) -> Optional[str]:
+    git_dir = project_path / '.git'
+    head_file = git_dir / 'HEAD'
+    try:
+      head_content = head_file.read_text(encoding='utf-8').strip()
+    except OSError:
+      return None
+
+    if not head_content:
+      return None
+
+    if head_content.startswith('ref:'):
+      ref = head_content[4:].strip()
+      if not ref:
+        return None
+      return Path(ref).name
+
+    return head_content
+
+  def _rewrite_project_metadata(
+    self,
+    conversation_file: Path,
+    source_project_path: Path,
+    target_project_path: Path,
+    source_project_dir: str,
+    target_project_dir: str,
+    git_branch: Optional[str],
+  ) -> None:
+    try:
+      with conversation_file.open('r', encoding='utf-8') as handle:
+        lines = handle.readlines()
+    except OSError:
+      return
+
+    parsed_records: List[Tuple[str, Optional[Any]]] = []
+    for raw_line in lines:
+      stripped = raw_line.rstrip('\n')
+      record: Optional[Any]
+      if not stripped.strip():
+        record = None
+      else:
+        try:
+          record = json.loads(stripped)
+        except json.JSONDecodeError:
+          record = None
+      parsed_records.append((stripped, record))
+
+    source_path_candidates = {str(source_project_path)}
+    source_dir_candidates = {source_project_dir}
+
+    for _, data in parsed_records:
+      if data is not None:
+        self._collect_metadata_candidates(
+          data, source_path_candidates, source_dir_candidates
+        )
+
+    updated_lines: List[str] = []
+    for stripped, data in parsed_records:
+      if data is None:
+        updated_lines.append(stripped)
+        continue
+
+      mutated = self._rewrite_metadata_node(
+        data,
+        source_project_path,
+        target_project_path,
+        source_project_dir,
+        target_project_dir,
+        git_branch,
+        source_path_candidates,
+        source_dir_candidates,
+      )
+      updated_lines.append(json.dumps(mutated))
+
+    try:
+      with conversation_file.open('w', encoding='utf-8') as handle:
+        for line in updated_lines:
+          handle.write(f'{line}\n')
+    except OSError:
+      # Ignore write errors; the copy already exists even if metadata isn't ideal.
+      return
+
+  _BRANCH_KEYS = {'gitBranch'}
+  _PROJECT_DIR_KEYS = {'projectDir', 'projectDirectory'}
+  _PROJECT_PATH_KEYS = {
+    'workspaceRoot',
+    'workspacePath',
+    'projectPath',
+    'projectRoot',
+    'cwd',
+    'repoPath',
+  }
+
+  def _collect_metadata_candidates(
+    self,
+    value: Any,
+    path_candidates: set[str],
+    dir_candidates: set[str],
+    *,
+    key: Optional[str] = None,
+  ) -> None:
+    if isinstance(value, dict):
+      for field, field_value in value.items():
+        self._collect_metadata_candidates(
+          field_value, path_candidates, dir_candidates, key=field
+        )
+      return
+
+    if isinstance(value, list):
+      for item in value:
+        self._collect_metadata_candidates(
+          item, path_candidates, dir_candidates, key=key
+        )
+      return
+
+    if not isinstance(value, str):
+      return
+
+    if key in self._PROJECT_PATH_KEYS:
+      path_candidates.add(value)
+    if key in self._PROJECT_DIR_KEYS:
+      dir_candidates.add(value)
+
+  def _rewrite_metadata_node(
+    self,
+    value: Any,
+    source_project_path: Path,
+    target_project_path: Path,
+    source_project_dir: str,
+    target_project_dir: str,
+    git_branch: Optional[str],
+    source_path_candidates: set[str],
+    source_dir_candidates: set[str],
+    *,
+    key: Optional[str] = None,
+  ) -> Any:
+    if isinstance(value, dict):
+      return {
+        field: self._rewrite_metadata_node(
+          field_value,
+          source_project_path,
+          target_project_path,
+          source_project_dir,
+          target_project_dir,
+          git_branch,
+          source_path_candidates,
+          source_dir_candidates,
+          key=field,
+        )
+        for field, field_value in value.items()
+      }
+
+    if isinstance(value, list):
+      return [
+        self._rewrite_metadata_node(
+          item,
+          source_project_path,
+          target_project_path,
+          source_project_dir,
+          target_project_dir,
+          git_branch,
+          source_path_candidates,
+          source_dir_candidates,
+          key=key,
+        )
+        for item in value
+      ]
+
+    if isinstance(value, str):
+      return self._rewrite_metadata_string(
+        key,
+        value,
+        source_project_path,
+        target_project_path,
+        source_project_dir,
+        target_project_dir,
+        git_branch,
+        source_path_candidates,
+        source_dir_candidates,
+      )
+
+    return value
+
+  def _rewrite_metadata_string(
+    self,
+    key: Optional[str],
+    value: str,
+    source_project_path: Path,
+    target_project_path: Path,
+    source_project_dir: str,
+    target_project_dir: str,
+    git_branch: Optional[str],
+    source_path_candidates: set[str],
+    source_dir_candidates: set[str],
+  ) -> str:
+    if git_branch and key in self._BRANCH_KEYS:
+      return git_branch
+
+    if key in self._PROJECT_DIR_KEYS:
+      for candidate in source_dir_candidates:
+        swapped = self._swap_metadata_value(value, candidate, target_project_dir)
+        if swapped != value:
+          return swapped
+      return value
+
+    if key in self._PROJECT_PATH_KEYS:
+      target_path_str = str(target_project_path)
+      for candidate in source_path_candidates:
+        swapped = self._swap_metadata_value(value, candidate, target_path_str)
+        if swapped != value:
+          return swapped
+      return value
+
+    if value in source_dir_candidates:
+      return target_project_dir
+
+    target_path_str = str(target_project_path)
+    if value in source_path_candidates:
+      return target_path_str
+
+    return value
+
+  @staticmethod
+  def _swap_metadata_value(value: str, old: str, new: str) -> str:
+    if not old:
+      return value
+    if value == old:
+      return new
+    if old in value:
+      return value.replace(old, new)
+    return value
 
   def build_conversation_tree(
     self, conversations: List[ConversationFile]

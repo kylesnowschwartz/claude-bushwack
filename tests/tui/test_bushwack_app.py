@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import pytest
 
 from claude_bushwack.core import ConversationFile
 from claude_bushwack.exceptions import ConversationNotFoundError
-from claude_bushwack.tui import BushwackApp, ExternalCommand
+from claude_bushwack.tui import BushwackApp, DirectoryPickerScreen, ExternalCommand
 
 
 @pytest.fixture
@@ -79,8 +79,11 @@ def test_branch_conversation_success(
 ):
   new_uuid = '44444444-4444-4444-4444-444444444444'
 
-  def fake_branch(uuid: str) -> ConversationFile:
+  def fake_branch(
+    uuid: str, target_project_path: Optional[Path] = None
+  ) -> ConversationFile:
     assert uuid == '11111111-1111-1111-1111-111111111111'
+    assert target_project_path == project_cwd
     path = conversation_factory(new_uuid, parent_uuid=uuid, summary=None)
     return ConversationFile(
       path=path,
@@ -93,6 +96,49 @@ def test_branch_conversation_success(
 
   bushwack_app.conversation_manager.branch_conversation = fake_branch
   messages = capture_status(bushwack_app, monkeypatch)
+  pushed: list[tuple[DirectoryPickerScreen, Optional[object]]] = []
+
+  def capture_screen(screen, *args, **kwargs):
+    callback = kwargs.get('callback')
+    pushed.append((screen, callback))
+
+  monkeypatch.setattr(bushwack_app, 'push_screen', capture_screen)
+
+  async def _interaction(pilot) -> None:
+    tree = bushwack_app.query_one('#conversation_tree')
+    await pilot.pause()
+    node = tree.root.children[0]
+    tree.select_node(node)
+    bushwack_app._set_selected_from_node(node)
+    bushwack_app.action_branch_conversation()
+    await pilot.pause()
+    assert pushed, 'Expected the picker to be presented'
+    _, callback = pushed.pop(0)
+    assert callback is not None
+    callback(project_cwd)
+    await pilot.pause()
+
+  run_app(bushwack_app, _interaction)
+  assert any('Branched' in message for message in messages)
+
+
+def test_branch_conversation_opens_picker(
+  monkeypatch: pytest.MonkeyPatch, bushwack_app: BushwackApp
+) -> None:
+  branch_calls = []
+
+  def record_branch(*args, **kwargs):
+    branch_calls.append((args, kwargs))
+
+  bushwack_app.conversation_manager.branch_conversation = record_branch
+
+  pushed = []
+
+  def capture_screen(screen, *args, **kwargs):
+    callback = kwargs.get('callback')
+    pushed.append((screen, callback))
+
+  monkeypatch.setattr(bushwack_app, 'push_screen', capture_screen)
 
   async def _interaction(pilot) -> None:
     tree = bushwack_app.query_one('#conversation_tree')
@@ -104,16 +150,29 @@ def test_branch_conversation_success(
     await pilot.pause()
 
   run_app(bushwack_app, _interaction)
-  assert any('Branched' in message for message in messages)
+
+  assert pushed, 'Branch action should push the directory picker screen'
+  screen, callback = pushed[0]
+  assert isinstance(screen, DirectoryPickerScreen)
+  assert callable(callback)
+  assert branch_calls == []
 
 
 def test_branch_conversation_error(
   monkeypatch: pytest.MonkeyPatch, bushwack_app: BushwackApp
 ):
-  bushwack_app.conversation_manager.branch_conversation = lambda uuid: (
-    _ for _ in ()
-  ).throw(ConversationNotFoundError(uuid))
+  def raise_error(uuid: str, target_project_path=None):
+    raise ConversationNotFoundError(uuid)
+
+  bushwack_app.conversation_manager.branch_conversation = raise_error
   messages = capture_status(bushwack_app, monkeypatch)
+  pushed: list[tuple[DirectoryPickerScreen, Optional[object]]] = []
+
+  def capture_screen(screen, *args, **kwargs):
+    callback = kwargs.get('callback')
+    pushed.append((screen, callback))
+
+  monkeypatch.setattr(bushwack_app, 'push_screen', capture_screen)
 
   async def _interaction(pilot) -> None:
     tree = bushwack_app.query_one('#conversation_tree')
@@ -122,6 +181,10 @@ def test_branch_conversation_error(
     tree.select_node(node)
     bushwack_app._set_selected_from_node(node)
     bushwack_app.action_branch_conversation()
+    await pilot.pause()
+    _, callback = pushed.pop(0)
+    assert callback is not None
+    callback(Path('/tmp/target'))
     await pilot.pause()
 
   run_app(bushwack_app, _interaction)

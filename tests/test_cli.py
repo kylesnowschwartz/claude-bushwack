@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import types
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import pytest
 from click.testing import CliRunner
 
 from claude_bushwack.cli import main
-from claude_bushwack.core import ConversationFile
+from claude_bushwack.core import ClaudeConversationManager, ConversationFile
 from claude_bushwack.exceptions import (
   AmbiguousSessionIDError,
   ConversationNotFoundError,
@@ -128,6 +129,79 @@ def test_branch_command_success(
   assert result.exit_code == 0
   assert 'Successfully branched conversation!' in result.output
   assert new.uuid in result.output
+
+
+def test_branch_command_with_target_rewrites_metadata(
+  monkeypatch: pytest.MonkeyPatch,
+  runner: CliRunner,
+  manager: ClaudeConversationManager,
+  conversation_factory: Callable[..., Path],
+  tmp_path: Path,
+) -> None:
+  source_uuid = '55555555-5555-5555-5555-555555555555'
+  encoded_current = manager._path_to_project_dir(
+    Path('/Users/kyle/Code/my-projects/claude-bushwack')
+  )
+
+  extra_line = types.SimpleNamespace(
+    type='metadata',
+    content={
+      'projectDir': encoded_current,
+      'workspaceRoot': '/Users/kyle/Code/my-projects/claude-bushwack',
+      'gitBranch': 'feature/source',
+      'metadata': {
+        'projectDir': encoded_current,
+        'workspaceRoot': '/Users/kyle/Code/my-projects/claude-bushwack',
+      },
+    },
+  )
+
+  conversation_factory(
+    source_uuid,
+    summary='CLI source',
+    git_branch='feature/source',
+    extra_lines=[extra_line],
+  )
+
+  target_project_path = tmp_path / 'cli-target'
+  (target_project_path / '.git' / 'refs' / 'heads').mkdir(parents=True)
+  (target_project_path / '.git' / 'HEAD').write_text('ref: refs/heads/target-branch')
+
+  monkeypatch.setattr('claude_bushwack.cli.ClaudeConversationManager', lambda: manager)
+
+  result = runner.invoke(
+    main, ['branch', source_uuid, '--project', str(target_project_path)]
+  )
+
+  assert result.exit_code == 0
+  assert 'Successfully branched conversation!' in result.output
+
+  encoded_target = manager._path_to_project_dir(target_project_path)
+  target_dir = manager.claude_projects_dir / encoded_target
+  files = list(target_dir.glob('*.jsonl'))
+  assert files, 'Branch command should create a conversation file'
+
+  with files[0].open('r', encoding='utf-8') as handle:
+    records = [json.loads(line) for line in handle if line.strip()]
+
+  assert any(
+    record.get('parentUuid') == source_uuid
+    for record in records
+    if 'parentUuid' in record
+  )
+  for record in records:
+    if 'gitBranch' in record:
+      assert record['gitBranch'] == 'target-branch'
+    if 'workspaceRoot' in record:
+      assert record['workspaceRoot'] == str(target_project_path)
+    if 'projectDir' in record:
+      assert record['projectDir'] == encoded_target
+    metadata = record.get('metadata')
+    if isinstance(metadata, dict):
+      if 'projectDir' in metadata:
+        assert metadata['projectDir'] == encoded_target
+      if 'workspaceRoot' in metadata:
+        assert metadata['workspaceRoot'] == str(target_project_path)
 
 
 def test_branch_command_errors(

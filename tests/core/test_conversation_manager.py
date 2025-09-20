@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Callable
 
 import pytest
 
@@ -145,6 +148,63 @@ def test_branch_conversation_custom_target(
   assert (
     new_conversation.path.parent == populated_manager.claude_projects_dir / expected_dir
   )
+
+
+def test_branch_conversation_rewrites_project_metadata(
+  manager: ClaudeConversationManager,
+  conversation_factory: Callable[..., Path],
+  tmp_path: Path,
+) -> None:
+  """Metadata containing project paths should update for the new target."""
+  source_uuid = 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb'
+  old_project_dir = '-Users-kyle-Code-my-projects-claude-bushwack'
+  old_project_path = '/Users/kyle/Code/my-projects/claude-bushwack'
+
+  extra_line = SimpleNamespace(
+    type='metadata',
+    content={
+      'projectDir': old_project_dir,
+      'workspaceRoot': old_project_path,
+      'gitBranch': 'feature/original',
+      'metadata': {'projectDir': old_project_dir, 'workspaceRoot': old_project_path},
+    },
+  )
+
+  conversation_factory(
+    source_uuid,
+    parent_uuid=None,
+    summary='Source conversation',
+    git_branch='feature/original',
+    extra_lines=[extra_line],
+  )
+
+  target_project_path = tmp_path / 'second-project'
+  (target_project_path / '.git' / 'refs' / 'heads').mkdir(parents=True)
+  (target_project_path / '.git' / 'HEAD').write_text('ref: refs/heads/main')
+
+  new_conversation = manager.branch_conversation(
+    source_uuid, target_project_path=target_project_path
+  )
+
+  assert new_conversation.project_path == str(target_project_path)
+
+  with new_conversation.path.open('r', encoding='utf-8') as handle:
+    records = [json.loads(line) for line in handle if line.strip()]
+
+  project_dir = manager._path_to_project_dir(target_project_path)
+  for record in records:
+    if 'gitBranch' in record:
+      assert record['gitBranch'] == 'main'
+    if 'projectDir' in record:
+      assert record['projectDir'] == project_dir
+    if 'workspaceRoot' in record:
+      assert record['workspaceRoot'] == str(target_project_path)
+    metadata = record.get('metadata')
+    if isinstance(metadata, dict):
+      if 'projectDir' in metadata:
+        assert metadata['projectDir'] == project_dir
+      if 'workspaceRoot' in metadata:
+        assert metadata['workspaceRoot'] == str(target_project_path)
 
 
 def test_branch_conversation_error_propagation(
