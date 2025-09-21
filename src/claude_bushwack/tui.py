@@ -33,7 +33,7 @@ from .exceptions import (
 _PREVIEW_LIMIT = 30
 _PREVIEW_PANE_LIMIT = 600
 
-_COLUMN_LAYOUT = [
+_BASE_COLUMN_LAYOUT = [
   ('uuid', 12, 'UUID'),
   ('modified', 12, 'Modified'),
   ('created', 12, 'Created'),
@@ -41,6 +41,8 @@ _COLUMN_LAYOUT = [
   ('messages', 6, 'Msgs'),
   ('branch', 18, 'Git Branch'),
 ]
+
+_ALL_SCOPE_COLUMN = ('project', 32, 'Project Path')
 
 _HEADER_PREFIX = '    '
 
@@ -485,6 +487,10 @@ class BushwackApp(App):
       'messages': message_display,
       'branch': branch_display,
     }
+    if self.show_all_projects:
+      column_values['project'] = self._format_project_path(
+        conversation.project_path
+      )
     label_text = self._format_columns(column_values, description)
 
     node_data = ConversationNodeData(
@@ -769,7 +775,9 @@ class BushwackApp(App):
     metadata.add_column()
 
     metadata.add_row('UUID', conversation.uuid)
-    metadata.add_row('Project', conversation.project_path)
+    metadata.add_row(
+      'Project', self._format_project_path(conversation.project_path)
+    )
     metadata.add_row('File', str(conversation.path))
     metadata.add_row(
       'Last Modified', self._format_timestamp(conversation.last_modified)
@@ -984,6 +992,19 @@ class BushwackApp(App):
     return f'{trimmed[:29]}...'
 
   @staticmethod
+  def _format_project_path(project_path: Optional[str]) -> str:
+    if not project_path:
+      return ''
+    path_str = str(project_path)
+    home = str(Path.home())
+    if path_str == home:
+      return '~'
+    home_prefix = f'{home}/'
+    if path_str.startswith(home_prefix):
+      return f'~/{path_str[len(home_prefix):]}'
+    return path_str
+
+  @staticmethod
   def _coerce_text(message: Dict[str, object]) -> str:
     if not isinstance(message, dict):
       return ''
@@ -1077,7 +1098,7 @@ class BushwackApp(App):
     self, column_values: Dict[str, str], trailing: str, *, prefix: str = ''
   ) -> Text:
     segments = []
-    for key, width, _ in _COLUMN_LAYOUT:
+    for key, width, _ in self._column_layout():
       value = column_values.get(key, '')
       segments.append(self._pad_column(value, width))
 
@@ -1108,12 +1129,18 @@ class BushwackApp(App):
     header.update(self._render_column_headers())
 
   def _render_column_headers(self) -> Text:
-    values = {key: label for key, _, label in _COLUMN_LAYOUT}
+    values = {key: label for key, _, label in self._column_layout()}
     header_text = self._format_columns(
       values, 'Summary or user message', prefix=_HEADER_PREFIX
     )
     header_text.stylize('bold')
     return header_text
+
+  def _column_layout(self) -> List[tuple[str, int, str]]:
+    layout: List[tuple[str, int, str]] = list(_BASE_COLUMN_LAYOUT)
+    if self.show_all_projects:
+      layout.append(_ALL_SCOPE_COLUMN)
+    return layout
 
 
 if __name__ == '__main__':

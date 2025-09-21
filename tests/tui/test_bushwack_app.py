@@ -373,6 +373,32 @@ def test_refresh_tree_updates_status(
   assert any('Refreshing conversations' in message for message in messages)
 
 
+def test_all_scope_includes_project_path_column(bushwack_app: BushwackApp):
+  async def _interaction(pilot) -> None:
+    await pilot.pause()
+
+    header = bushwack_app.query_one('#column_headers')
+    assert hasattr(header, 'renderable')
+    header_text = getattr(header.renderable, 'plain', str(header.renderable))
+    assert 'Project Path' not in header_text
+
+    bushwack_app.action_toggle_scope()
+    await pilot.pause()
+
+    header = bushwack_app.query_one('#column_headers')
+    header_text = getattr(header.renderable, 'plain', str(header.renderable))
+    assert 'Project Path' in header_text
+
+    tree = bushwack_app.query_one('#conversation_tree')
+    await pilot.pause()
+    first = tree.root.children[0]
+    assert first.label is not None
+    label_text = first.label.plain
+    assert label_text.count('~/') >= 1
+
+  run_app(bushwack_app, _interaction)
+
+
 def test_tree_description_labels(bushwack_app: BushwackApp):
   async def _interaction(pilot) -> None:
     tree = bushwack_app.query_one('#conversation_tree')
