@@ -504,6 +504,41 @@ def test_copy_move_conversation_error(
   assert any('Copy move failed' in message for message in messages)
 
 
+def test_yank_conversation_copies_absolute_path(
+  monkeypatch: pytest.MonkeyPatch,
+  bushwack_app: BushwackApp,
+  populated_manager: ClaudeConversationManager,
+) -> None:
+  copied: List[str] = []
+
+  def fake_copy(value: str) -> bool:
+    copied.append(value)
+    return True
+
+  monkeypatch.setattr(bushwack_app, '_copy_path_to_clipboard', fake_copy)
+  messages = capture_status(bushwack_app, monkeypatch)
+
+  expected_path = str(
+    populated_manager.find_conversation(
+      '11111111-1111-1111-1111-111111111111'
+    ).path.resolve()
+  )
+
+  async def _interaction(pilot) -> None:
+    tree = bushwack_app.query_one('#conversation_tree')
+    await pilot.pause()
+    node = tree.root.children[0]
+    tree.select_node(node)
+    bushwack_app._set_selected_from_node(node)
+    bushwack_app.action_yank_conversation()
+    await pilot.pause()
+
+  run_app(bushwack_app, _interaction)
+
+  assert copied == [expected_path]
+  assert any('Copied conversation path to clipboard' in message for message in messages)
+
+
 def test_open_conversation_missing_cli(
   monkeypatch: pytest.MonkeyPatch, bushwack_app: BushwackApp
 ):

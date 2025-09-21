@@ -341,6 +341,8 @@ class BushwackApp(App):
     Binding('B', 'branch_conversation', 'Branch', show=False),
     Binding('c', 'copy_move_conversation', 'Copy Move', show=True, key_display='C'),
     Binding('C', 'copy_move_conversation', 'Copy Move', show=False),
+    Binding('y', 'yank_conversation', 'Yank', show=True, key_display='Y'),
+    Binding('Y', 'yank_conversation', 'Yank', show=False),
     Binding('o', 'open_conversation', 'Open', show=True, key_display='O'),
     Binding('O', 'open_conversation', 'Open', show=False),
     Binding('p', 'toggle_preview', 'Preview', show=True),
@@ -766,6 +768,37 @@ class BushwackApp(App):
       force_cache_bypass=self.show_all_projects,
     )
 
+  def _copy_path_to_clipboard(self, value: str) -> bool:
+    driver = getattr(self, '_driver', None)
+    if driver is None:
+      return False
+
+    try:
+      import base64
+
+      payload = base64.b64encode(value.encode('utf-8')).decode('utf-8')
+      driver.write(f'\x1b]52;c;{payload}\a')
+    except Exception:
+      return False
+
+    return True
+
+  def action_yank_conversation(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    node = tree.cursor_node
+    if not node or not isinstance(node.data, ConversationNodeData):
+      self.show_status('Select a conversation to yank')
+      return
+
+    conversation = node.data.conversation
+    resolved_path = conversation.path.resolve()
+
+    if not self._copy_path_to_clipboard(str(resolved_path)):
+      self.show_status('Clipboard unavailable')
+      return
+
+    self.show_status(f'Copied conversation path to clipboard: {resolved_path}')
+
   def action_open_conversation(self) -> None:
     tree = self.query_one('#conversation_tree', Tree)
     node = tree.cursor_node
@@ -816,6 +849,7 @@ class BushwackApp(App):
       '',
       'Actions:',
       '  B              Branch selected conversation',
+      '  Y              Copy conversation path to clipboard',
       '  O              Open in claude CLI',
       '  r              Refresh conversations',
       '  p              Toggle preview pane',
