@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, cast
 
 from rich.console import Group
 from rich.panel import Panel
@@ -22,6 +22,7 @@ from textual.timer import Timer
 from textual.widgets import DirectoryTree, Footer, Input, Static, Tree
 from textual.widgets._directory_tree import DirEntry
 from textual.widgets.tree import TreeNode
+from textual.worker import Worker, WorkerState
 
 from .core import ClaudeConversationManager, ConversationFile
 from .exceptions import (
@@ -80,6 +81,17 @@ class ExternalCommand:
 
   executable: str
   args: List[str]
+
+
+@dataclass
+class AllProjectsCache:
+  """Cached payload for the all-projects scope."""
+
+  conversations: List[ConversationFile]
+  display_data: Dict[str, ConversationDisplayData]
+
+  def is_empty(self) -> bool:
+    return not self.conversations
 
 
 class ProjectDirectoryTree(DirectoryTree):
@@ -347,6 +359,8 @@ class BushwackApp(App):
     self._selected_uuid: Optional[str] = None
     self._node_lookup: Dict[str, TreeNode] = {}
     self.preview_visible = False
+    self._all_projects_cache: Optional[AllProjectsCache] = None
+    self._all_projects_worker: Optional[Worker[AllProjectsCache]] = None
 
   def compose(self) -> ComposeResult:
     """Create child widgets for the app."""
@@ -375,9 +389,14 @@ class BushwackApp(App):
     self._apply_preview_visibility()
     self._clear_preview()
     self.load_conversations()
+    self._prime_all_projects_cache()
 
   def load_conversations(
-    self, focus_uuid: Optional[str] = None, *, announce_scope: bool = True
+    self,
+    focus_uuid: Optional[str] = None,
+    *,
+    announce_scope: bool = True,
+    force_cache_bypass: bool = False,
   ) -> None:
     """Load conversations and populate the tree."""
     self._update_column_headers()
@@ -390,17 +409,26 @@ class BushwackApp(App):
 
     try:
       if self.show_all_projects:
-        conversations = self.conversation_manager.find_all_conversations(
-          all_projects=True
-        )
+        cache = None if force_cache_bypass else self._all_projects_cache
+        if cache and not cache.is_empty():
+          conversations = cache.conversations
+          display_data = cache.display_data
+        else:
+          conversations = self.conversation_manager.find_all_conversations(
+            all_projects=True
+          )
+          display_data = self._build_display_data(conversations)
+          self._all_projects_cache = AllProjectsCache(
+            conversations=conversations, display_data=display_data
+          )
         scope = 'all projects'
       else:
         conversations = self.conversation_manager.find_all_conversations(
           current_project_only=True
         )
+        display_data = self._build_display_data(conversations)
         scope = 'current project'
 
-      display_data = self._build_display_data(conversations)
       self.populate_tree(tree, conversations, display_data)
 
       target_uuid = focus_uuid or self._selected_uuid
@@ -440,13 +468,9 @@ class BushwackApp(App):
     if self.show_all_projects:
       self._populate_all_projects_tree(tree, roots, children_dict, display_data)
     else:
-      self._populate_current_project_tree(
-        tree.root, roots, children_dict, display_data
-      )
+      self._populate_current_project_tree(tree.root, roots, children_dict, display_data)
 
-    self._add_orphaned_conversations(
-      tree.root, orphaned, children_dict, display_data
-    )
+    self._add_orphaned_conversations(tree.root, orphaned, children_dict, display_data)
 
     tree.root.expand()
 
@@ -554,9 +578,7 @@ class BushwackApp(App):
       'branch': branch_display,
     }
     if self.show_all_projects:
-      column_values['project'] = self._format_project_path(
-        conversation.project_path
-      )
+      column_values['project'] = self._format_project_path(conversation.project_path)
     label_text = self._format_columns(column_values, description)
 
     node_data = ConversationNodeData(
@@ -675,7 +697,12 @@ class BushwackApp(App):
       f'Branched {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}... ({target_display})'
     )
     self._selected_uuid = new_conversation.uuid
-    self.load_conversations(focus_uuid=new_conversation.uuid, announce_scope=False)
+    self._prime_all_projects_cache(force=True)
+    self.load_conversations(
+      focus_uuid=new_conversation.uuid,
+      announce_scope=False,
+      force_cache_bypass=self.show_all_projects,
+    )
 
   def action_copy_move_conversation(self) -> None:
     tree = self.query_one('#conversation_tree', Tree)
@@ -724,7 +751,12 @@ class BushwackApp(App):
       f'Copied {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}... ({target_display})'
     )
     self._selected_uuid = new_conversation.uuid
-    self.load_conversations(focus_uuid=new_conversation.uuid, announce_scope=False)
+    self._prime_all_projects_cache(force=True)
+    self.load_conversations(
+      focus_uuid=new_conversation.uuid,
+      announce_scope=False,
+      force_cache_bypass=self.show_all_projects,
+    )
 
   def action_open_conversation(self) -> None:
     tree = self.query_one('#conversation_tree', Tree)
@@ -746,7 +778,10 @@ class BushwackApp(App):
 
   def action_refresh_tree(self) -> None:
     self.show_status('Refreshing conversations...')
-    self.load_conversations(focus_uuid=self._selected_uuid)
+    self._prime_all_projects_cache(force=True)
+    self.load_conversations(
+      focus_uuid=self._selected_uuid, force_cache_bypass=self.show_all_projects
+    )
 
   def action_toggle_scope(self) -> None:
     self.show_all_projects = not self.show_all_projects
@@ -841,9 +876,7 @@ class BushwackApp(App):
     metadata.add_column()
 
     metadata.add_row('UUID', conversation.uuid)
-    metadata.add_row(
-      'Project', self._format_project_path(conversation.project_path)
-    )
+    metadata.add_row('Project', self._format_project_path(conversation.project_path))
     metadata.add_row('File', str(conversation.path))
     metadata.add_row(
       'Last Modified', self._format_timestamp(conversation.last_modified)
@@ -884,6 +917,39 @@ class BushwackApp(App):
     content = Group(*segments)
 
     return Panel(content, title='Conversation Preview', border_style='cyan')
+
+  def _prime_all_projects_cache(self, *, force: bool = False) -> None:
+    worker = self._all_projects_worker
+    if worker and worker.is_running and not force:
+      return
+    self._all_projects_worker = self.run_worker(
+      self._load_all_projects_payload,
+      name='all-projects-cache',
+      group='all-projects-cache',
+      exclusive=True,
+      exit_on_error=False,
+      thread=True,
+    )
+
+  def _load_all_projects_payload(self) -> AllProjectsCache:
+    conversations = self.conversation_manager.find_all_conversations(all_projects=True)
+    display_data = self._build_display_data(conversations)
+    return AllProjectsCache(conversations=conversations, display_data=display_data)
+
+  def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+    worker = event.worker
+    if worker is not self._all_projects_worker:
+      return
+
+    if event.state == WorkerState.SUCCESS:
+      result = cast(Optional[AllProjectsCache], worker.result)
+      if result is None:
+        return
+      self._all_projects_cache = result
+      if self.show_all_projects:
+        self.load_conversations(focus_uuid=self._selected_uuid, announce_scope=False)
+    elif event.state == WorkerState.ERROR:
+      self.show_status('Unable to preload all projects')
 
   def _focus_on_uuid(self, tree: Tree, uuid: str) -> None:
     node = self._node_lookup.get(uuid)

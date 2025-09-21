@@ -11,7 +11,7 @@ from typing import List, Optional
 
 import pytest
 
-from claude_bushwack.core import ConversationFile
+from claude_bushwack.core import ClaudeConversationManager, ConversationFile
 from claude_bushwack.exceptions import ConversationNotFoundError
 from claude_bushwack.tui import (
   BushwackApp,
@@ -77,10 +77,75 @@ def test_toggle_scope_updates_status(
   assert any('Scope: all projects' in message for message in messages)
 
 
+async def _wait_for_workers(app: BushwackApp, timeout: float = 0.5) -> None:
+  await asyncio.wait_for(app.workers.wait_for_complete(), timeout=timeout)
+
+
+def test_all_projects_scope_uses_prefetched_cache(
+  bushwack_app: BushwackApp, monkeypatch: pytest.MonkeyPatch, populated_manager
+):
+  original_find_all = ClaudeConversationManager.find_all_conversations
+  messages = capture_status(bushwack_app, monkeypatch)
+
+  async def _interaction(pilot) -> None:
+    tree = bushwack_app.query_one('#conversation_tree')
+    await pilot.pause()
+    await _wait_for_workers(bushwack_app)
+    await pilot.pause()
+    assert bushwack_app._all_projects_cache is not None
+
+    def fail_on_all_projects(self, *args, **kwargs):
+      if kwargs.get('all_projects'):
+        raise AssertionError('Unexpected foreground fetch of all projects')
+      return original_find_all(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+      ClaudeConversationManager, 'find_all_conversations', fail_on_all_projects
+    )
+
+    bushwack_app.action_toggle_scope()
+    await pilot.pause()
+
+    assert bushwack_app.show_all_projects is True
+    assert tree.root.children, 'Expected cached conversations to populate the tree'
+
+  run_app(bushwack_app, _interaction)
+  assert any('Scope: all projects' in message for message in messages)
+
+
+def test_refresh_reprimes_all_projects_cache(
+  bushwack_app: BushwackApp, monkeypatch: pytest.MonkeyPatch, populated_manager
+):
+  original_find_all = ClaudeConversationManager.find_all_conversations
+
+  async def _interaction(pilot) -> None:
+    await pilot.pause()
+    await _wait_for_workers(bushwack_app)
+    await pilot.pause()
+    assert bushwack_app._all_projects_cache is not None
+
+    call_counts = {'all_projects': 0}
+
+    def counting_wrapper(self, *args, **kwargs):
+      if kwargs.get('all_projects'):
+        call_counts['all_projects'] += 1
+      return original_find_all(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+      ClaudeConversationManager, 'find_all_conversations', counting_wrapper
+    )
+
+    bushwack_app.action_refresh_tree()
+    await pilot.pause()
+    await _wait_for_workers(bushwack_app)
+
+    assert call_counts['all_projects'] == 1
+
+  run_app(bushwack_app, _interaction)
+
+
 def test_all_projects_scope_groups_by_project(
-  bushwack_app: BushwackApp,
-  populated_manager,
-  project_cwd: Path,
+  bushwack_app: BushwackApp, populated_manager, project_cwd: Path
 ):
   recent_project = Path('/Users/kyle/Code/my-projects/zeta-project')
   other_project = Path('/Users/kyle/Code/my-projects/alpha-project')
@@ -198,6 +263,7 @@ def test_all_projects_scope_groups_by_project(
     assert plain_label(children[-1]) == 'Orphaned branches'
 
   run_app(bushwack_app, _interaction)
+
 
 def test_branch_conversation_success(
   monkeypatch: pytest.MonkeyPatch,
