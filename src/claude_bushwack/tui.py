@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from rich.style import Style
 from rich.text import Text
 
 from textual.app import App, ComposeResult
@@ -94,6 +95,7 @@ class ProjectDirectoryTree(DirectoryTree):
     )
     self._manager = manager
     self._filter_text = ''
+    self._current_project_token: Optional[str] = None
     self.show_root = False
 
   def set_filter(self, value: str) -> None:
@@ -124,16 +126,6 @@ class ProjectDirectoryTree(DirectoryTree):
       child.allow_expand = False
     node.expand()
 
-  def render_label(self, node: TreeNode, base_style, style) -> Text:  # type: ignore[override]
-    data = node.data
-    label = self._format_label(data.path) if data is not None else ''
-    text = Text(label)
-    if base_style:
-      text.stylize(base_style)
-    if style:
-      text.stylize(style)
-    return text
-
   def decode_path(self, encoded_path: Path) -> Optional[Path]:
     if encoded_path == self._manager.claude_projects_dir:
       return None
@@ -145,6 +137,43 @@ class ProjectDirectoryTree(DirectoryTree):
   def _format_label(self, path: Path) -> str:
     decoded = self.decode_path(path)
     return str(decoded) if decoded is not None else path.name
+
+  def set_current_project(self, project_path: Optional[Path]) -> None:
+    if project_path is None:
+      self._current_project_token = None
+      self.refresh(layout=True)
+      return
+    try:
+      self._current_project_token = self._manager._path_to_project_dir(project_path)
+    except Exception:
+      self._current_project_token = None
+    self.refresh(layout=True)
+
+  def _is_current_project(self, node: TreeNode) -> bool:
+    if self._current_project_token is None:
+      return False
+    data = node.data
+    if data is None or not hasattr(data, 'path'):
+      return False
+    return data.path.name == self._current_project_token
+
+  def render_label(  # type: ignore[override]
+    self, node: TreeNode, base_style: Style, style: Style
+  ) -> Text:
+    data = node.data
+    label = self._format_label(data.path) if data is not None else ''
+
+    combined_style = Style()
+    if isinstance(base_style, Style):
+      combined_style += base_style
+    if isinstance(style, Style):
+      combined_style += style
+
+    text = Text(label, style=combined_style)
+    if self._is_current_project(node):
+      marker_style = combined_style + Style(color='cyan')
+      text.append(' • current', style=marker_style)
+    return text
 
 
 class DirectoryPickerScreen(ModalScreen[Optional[Path]]):
@@ -171,12 +200,15 @@ class DirectoryPickerScreen(ModalScreen[Optional[Path]]):
     yield Static('Select target project', id='picker_title')
     yield Input(placeholder='Filter projects…', id='picker_filter')
     yield ProjectDirectoryTree(self._manager, id='picker_tree')
-    yield Static('Enter to copy • Esc to cancel', id='picker_hint')
+    yield Static(
+      'Enter to copy • Esc to cancel • Ctrl+F to focus filter', id='picker_hint'
+    )
 
   def on_mount(self) -> None:
     filter_input = self.query_one('#picker_filter', Input)
     tree = self.query_one(ProjectDirectoryTree)
     tree.root.expand()
+    tree.set_current_project(self._current_project)
     if self._initial_filter:
       filter_input.value = self._initial_filter
       tree.set_filter(self._initial_filter)

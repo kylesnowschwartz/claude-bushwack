@@ -9,6 +9,8 @@ from typing import List
 
 import pytest
 
+from rich.style import Style
+
 from textual.app import App
 from textual.widgets import Input
 
@@ -82,3 +84,61 @@ def test_directory_picker_filters_and_selects(
   asyncio.run(_exercise())
 
   assert captured[-1] == selected[-1]
+
+
+def test_directory_picker_marks_current_project(manager) -> None:
+  """The current project is annotated with a cyan marker."""
+
+  base = manager.claude_projects_dir
+  first_path = Path('/Users/kyle/Code/projects/alpha')
+  current_path = Path('/Users/kyle/Code/projects/beta')
+
+  for path in [first_path, current_path]:
+    encoded = manager._path_to_project_dir(path)
+    (base / encoded).mkdir(exist_ok=True)
+
+  screen = DirectoryPickerScreen(manager, current_project=current_path)
+  app = _PickerHarness(screen)
+
+  async def _exercise() -> None:
+    async with app.run_test() as pilot:
+      await pilot.pause()
+
+      tree = screen.query_one(ProjectDirectoryTree)
+      target_token = manager._path_to_project_dir(current_path)
+      target_node = next(
+        child for child in tree.root.children if child.data.path.name == target_token
+      )
+
+      label = tree.render_label(target_node, None, None)
+      assert '• current' in label.plain
+
+      for span in label.spans:
+        segment = label.plain[span.start : span.end]
+        if segment == ' • current':
+          assert span.style is not None
+          style = span.style
+          if isinstance(style, str):
+            assert style == 'cyan'
+          else:
+            assert style.color is not None
+            assert style.color.name == 'cyan'
+          break
+      else:  # pragma: no cover - defensive
+        pytest.fail('Missing cyan style for current marker')
+
+      styled = tree.render_label(target_node, Style(color='white'), Style())
+      marker_spans = [
+        span
+        for span in styled.spans
+        if styled.plain[span.start : span.end] == ' • current'
+      ]
+      assert marker_spans
+      marker_style = marker_spans[0].style
+      if isinstance(marker_style, str):
+        assert marker_style == 'cyan'
+      else:
+        assert marker_style.color is not None
+        assert marker_style.color.name == 'cyan'
+
+  asyncio.run(_exercise())
