@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -759,7 +759,28 @@ def test_metadata_rows_follow_tree_visibility(bushwack_app: BushwackApp):
   run_app(bushwack_app, _interaction)
 
 
-def test_metadata_scroll_tracks_tree(bushwack_app: BushwackApp):
+def test_metadata_scroll_tracks_tree(
+  bushwack_app: BushwackApp,
+  conversation_factory,
+  populated_manager,
+):
+  long_summary = ' '.join(f'Line {index}' for index in range(60))
+  base_time = datetime(2023, 1, 1, tzinfo=timezone.utc)
+  uuids = []
+  for index in range(40):
+    uuid = f'44444444-4444-4444-4444-{index:012x}'
+    conversation_factory(
+      uuid,
+      summary=long_summary,
+      preview_text=f'Prompt {index}',
+      assistant_text='Assistant reply',
+      created_at=base_time + timedelta(minutes=index),
+      git_branch='feature/sync-test',
+    )
+    uuids.append(uuid)
+
+  target_uuid = uuids[0]
+
   async def _interaction(pilot) -> None:
     tree = bushwack_app.query_one('#conversation_tree')
     metadata_container = bushwack_app.query_one('#metadata_container')
@@ -767,17 +788,41 @@ def test_metadata_scroll_tracks_tree(bushwack_app: BushwackApp):
     bushwack_app._refresh_metadata_view()
     await pilot.pause()
 
-    assert metadata_container.scroll_offset.y == tree.scroll_offset.y
+    visible_nodes = _visible_tree_nodes(tree)
+    if tree.cursor_node not in visible_nodes:
+      tree.select_node(visible_nodes[0])
+      bushwack_app._set_selected_from_node(tree.cursor_node)
+      await pilot.pause()
+      visible_nodes = _visible_tree_nodes(tree)
 
-    for _ in range(25):
+    target_index = next(
+      index for index, node in enumerate(visible_nodes)
+      if getattr(getattr(node, 'data', None), 'conversation', None)
+      and node.data.conversation.uuid == target_uuid
+    )
+    current_index = visible_nodes.index(tree.cursor_node)
+
+    for _ in range(target_index - current_index):
       bushwack_app.action_cursor_down()
       await pilot.pause()
 
-    assert metadata_container.scroll_offset.y == tree.scroll_offset.y
+    assert tree.cursor_node is visible_nodes[target_index]
 
-    bushwack_app.action_cursor_top()
-    await pilot.pause()
-    assert metadata_container.scroll_offset.y == tree.scroll_offset.y
+    selected_node = tree.cursor_node
+    assert isinstance(selected_node.data, ConversationNodeData)
+    assert selected_node.data.full_description.strip().startswith('Line 0')
+    assert bushwack_app._expanded_node_uuid == selected_node.data.conversation.uuid
+    selected_index = target_index
+    selected_height = len(bushwack_app._build_tree_lines(selected_node.data, expanded=True))
+    assert selected_height > 1
+
+    top_line = int(metadata_container.scroll_offset.y)
+    viewport_height = metadata_container.window_region.height
+    bottom_line = top_line + viewport_height - 1
+
+    assert metadata_container.max_scroll_y > 0
+    assert metadata_container.scroll_offset.y > 0
+    assert top_line <= selected_index <= bottom_line
 
   run_app(bushwack_app, _interaction)
 

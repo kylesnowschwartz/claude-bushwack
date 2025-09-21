@@ -393,7 +393,7 @@ class BushwackApp(App):
     conversation_tree.styles.width = '3fr'
 
     metadata_pane = Static('', id='metadata_pane')
-    metadata_pane.styles.height = '1fr'
+    metadata_pane.styles.height = 'auto'
     metadata_pane.styles.text_align = 'left'
     metadata_pane.styles.padding = (0, 1)
     metadata_pane.expand = True
