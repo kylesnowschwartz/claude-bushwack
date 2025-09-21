@@ -622,8 +622,11 @@ def test_all_scope_includes_project_path_column(bushwack_app: BushwackApp):
     tree = bushwack_app.query_one('#conversation_tree')
     await pilot.pause()
     first = tree.root.children[0]
+    tree.select_node(first)
+    bushwack_app._set_selected_from_node(first)
+    await pilot.pause()
     assert first.label is not None
-    label_text = first.label.plain
+    label_text = first.label.plain.split('\n', 1)[0]
     assert label_text.count('~/') >= 1
 
   run_app(bushwack_app, _interaction)
@@ -633,6 +636,7 @@ def test_tree_description_labels(bushwack_app: BushwackApp):
   async def _interaction(pilot) -> None:
     tree = bushwack_app.query_one('#conversation_tree')
     await pilot.pause()
+    bushwack_app._collapse_expanded_row()
 
     stack = list(tree.root.children)
     nodes = []
@@ -652,6 +656,13 @@ def test_tree_description_labels(bushwack_app: BushwackApp):
     assert 'Summary:' not in summary_label
     assert 'User:' not in summary_label
     assert summary_snippet in summary_label
+    uuid_display = summary_node.data.column_values['uuid']
+    modified_value = summary_node.data.column_values['modified']
+    summary_line = summary_label.split('\n', 1)[0]
+    assert uuid_display in summary_line
+    assert modified_value in summary_line
+    assert summary_line.index(uuid_display) < summary_line.index(summary_snippet)
+    assert summary_line.index(summary_snippet) < summary_line.index(modified_value)
 
     preview_only_node = next(
       (
@@ -667,12 +678,24 @@ def test_tree_description_labels(bushwack_app: BushwackApp):
     assert 'Summary:' not in preview_label
     assert 'User:' not in preview_label
     assert preview_snippet in preview_label
+    preview_uuid = preview_only_node.data.column_values['uuid']
+    preview_modified = preview_only_node.data.column_values['modified']
+    preview_line = preview_label.split('\n', 1)[0]
+    assert preview_uuid in preview_line
+    assert preview_modified in preview_line
+    assert preview_line.index(preview_uuid) < preview_line.index(preview_snippet)
+    assert preview_line.index(preview_snippet) < preview_line.index(preview_modified)
 
     bushwack_app._set_selected_from_node(summary_node)
     await pilot.pause()
     expanded_summary = summary_node.data.summary.strip() or summary_snippet
     assert summary_node.label.no_wrap is False
     assert expanded_summary in summary_node.label.plain
+    expanded_summary_label = summary_node.label.plain.split('\n', 1)[0]
+    assert modified_value in expanded_summary_label
+    assert expanded_summary_label.index(modified_value) > expanded_summary_label.index(
+      uuid_display
+    )
 
     bushwack_app._set_selected_from_node(preview_only_node)
     await pilot.pause()
@@ -680,6 +703,11 @@ def test_tree_description_labels(bushwack_app: BushwackApp):
     assert summary_node.label.no_wrap is True
     assert preview_only_node.label.no_wrap is False
     assert expanded_preview in preview_only_node.label.plain
+    expanded_preview_label = preview_only_node.label.plain.split('\n', 1)[0]
+    assert preview_modified in expanded_preview_label
+    assert expanded_preview_label.index(
+      preview_modified
+    ) > expanded_preview_label.index(preview_uuid)
 
   run_app(bushwack_app, _interaction)
 

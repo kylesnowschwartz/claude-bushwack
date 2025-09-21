@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import textwrap
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -36,7 +37,6 @@ _PREVIEW_LIMIT = 30
 _PREVIEW_PANE_LIMIT = 600
 
 _BASE_COLUMN_LAYOUT = [
-  ('uuid', 12, 'UUID'),
   ('modified', 12, 'Modified'),
   ('created', 12, 'Created'),
   ('children', 8, 'Branches'),
@@ -47,6 +47,10 @@ _BASE_COLUMN_LAYOUT = [
 _ALL_SCOPE_COLUMN = ('project', 32, 'Project Path')
 
 _HEADER_PREFIX = '    '
+_TREE_COLUMN_KEY = 'uuid'
+_TREE_HEADER = 'Conversation (UUID + summary)'
+_TREE_COLUMN_WIDTH = 48
+_METADATA_GAP = 2
 
 
 @dataclass
@@ -586,8 +590,6 @@ class BushwackApp(App):
     }
     if self.show_all_projects:
       column_values['project'] = self._format_project_path(conversation.project_path)
-    label_text = self._format_columns(column_values, collapsed_description)
-
     node_data = ConversationNodeData(
       conversation=conversation,
       preview=display_info.preview,
@@ -602,6 +604,7 @@ class BushwackApp(App):
       collapsed_description=collapsed_description,
       full_description=full_description,
     )
+    label_text = self._render_label_for_node(node_data, expanded=False)
 
     node = parent_node.add(label_text, data=node_data)
     self._node_lookup[conversation.uuid] = node
@@ -1276,6 +1279,64 @@ class BushwackApp(App):
       return value
     return f'{value[: limit - 3]}...'
 
+  def _render_label_for_node(
+    self, data: ConversationNodeData, *, expanded: bool
+  ) -> Text:
+    tree_lines = self._build_tree_lines(data, expanded=expanded)
+    metadata_text = self._format_metadata_values(data.column_values)
+
+    lines: List[str] = []
+    if tree_lines:
+      first_line = tree_lines[0]
+    else:
+      first_line = self._pad_column('', _TREE_COLUMN_WIDTH)
+
+    if metadata_text:
+      first_line = f'{first_line}{" " * _METADATA_GAP}{metadata_text}'
+
+    lines.append(first_line)
+    if expanded and len(tree_lines) > 1:
+      lines.extend(tree_lines[1:])
+
+    label = Text('\n'.join(lines))
+    label.no_wrap = not expanded
+    return label
+
+  def _build_tree_lines(
+    self, data: ConversationNodeData, *, expanded: bool
+  ) -> List[str]:
+    uuid_value = data.column_values.get(_TREE_COLUMN_KEY, '')
+    description = (
+      data.full_description if expanded else data.collapsed_description
+    ) or '[no summary]'
+
+    base_text = f'{uuid_value}  {description}'.strip()
+    if not base_text:
+      base_text = uuid_value or '[no summary]'
+
+    if not expanded:
+      return [self._pad_column(base_text, _TREE_COLUMN_WIDTH)]
+
+    subsequent_indent = ' ' * (len(uuid_value) + 2)
+    wrapper = textwrap.TextWrapper(
+      width=_TREE_COLUMN_WIDTH,
+      replace_whitespace=False,
+      drop_whitespace=False,
+      break_long_words=True,
+      break_on_hyphens=False,
+      initial_indent='',
+      subsequent_indent=subsequent_indent,
+    )
+    wrapped = wrapper.wrap(base_text)
+    if not wrapped:
+      wrapped = ['']
+
+    return [line.ljust(_TREE_COLUMN_WIDTH) for line in wrapped]
+
+  def _format_metadata_values(self, column_values: Dict[str, str]) -> str:
+    metadata = self._format_columns(column_values, '', prefix='', wrap=False)
+    return metadata.plain.rstrip()
+
   def _format_columns(
     self,
     column_values: Dict[str, str],
@@ -1283,9 +1344,11 @@ class BushwackApp(App):
     *,
     prefix: str = '',
     wrap: bool = False,
+    layout: Optional[List[tuple[str, int, str]]] = None,
   ) -> Text:
     segments = []
-    for key, width, _ in self._column_layout():
+    column_layout = layout or self._column_layout()
+    for key, width, _ in column_layout:
       value = column_values.get(key, '')
       segments.append(self._pad_column(value, width))
 
@@ -1302,10 +1365,7 @@ class BushwackApp(App):
       return
 
     data = node.data
-    trailing = data.full_description if expanded else data.collapsed_description
-    trailing_text = trailing or '[no summary]'
-    label = self._format_columns(data.column_values, trailing_text, wrap=expanded)
-    node.label = label
+    node.label = self._render_label_for_node(data, expanded=expanded)
 
   def _collapse_expanded_row(self) -> None:
     if not self._expanded_node_uuid:
@@ -1348,12 +1408,18 @@ class BushwackApp(App):
     header.update(self._render_column_headers())
 
   def _render_column_headers(self) -> Text:
-    values = {key: label for key, _, label in self._column_layout()}
-    header_text = self._format_columns(
-      values, 'Conversation preview', prefix=_HEADER_PREFIX
-    )
-    header_text.stylize('bold')
-    return header_text
+    metadata_values = {key: label for key, _, label in self._column_layout()}
+    tree_header = self._pad_column(_TREE_HEADER, _TREE_COLUMN_WIDTH)
+    metadata_text = self._format_columns(metadata_values, '', prefix='', wrap=False)
+
+    header_line = f'{_HEADER_PREFIX}{tree_header}'
+    metadata_plain = metadata_text.plain.rstrip()
+    if metadata_plain:
+      header_line = f'{header_line}{" " * _METADATA_GAP}{metadata_plain}'
+
+    header = Text(header_line)
+    header.stylize('bold')
+    return header
 
   def _column_layout(self) -> List[tuple[str, int, str]]:
     layout: List[tuple[str, int, str]] = list(_BASE_COLUMN_LAYOUT)
