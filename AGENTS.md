@@ -4,7 +4,7 @@
 Application code lives in `src/claude_bushwack/`: `cli.py` exposes the CLI surface, `core.py` holds conversation management, `tui.py` renders the Textual interface, and `exceptions.py` centralizes errors. Tests mirror this layout beneath `tests/`, with integration-style checks in `tests/tui/`. Deterministic fixtures and sample JSONL transcripts sit in `tests/assets/`; add new fixtures there so the suite stays self-contained.
 
 ## Build, Test, and Development Commands
-Run `poetry install` (or `make install`) to set up dependencies. Execute the CLI with `poetry run claude-bushwack` or the shorthand `poetry run cb`; append `tui` to launch the interface. `make test` drives the full pytest suite via Poetry, while `make lint` runs Ruff lint/format checks. Use `make format` to auto-apply Ruff fixes, and `make dev` for a full dev bootstrap.
+Run `poetry install` (or `make install`) to set up dependencies. Execute the CLI with `poetry run claude-bushwack`; append `tui` to launch the interface. `make test` drives the full pytest suite via Poetry, while `make lint` runs Ruff lint/format checks. Use `make format` to auto-apply Ruff fixes, and `make dev` for a full dev bootstrap.
 
 ## Coding Style & Naming Conventions
 Python modules use 2-space indentation and an 88-character width, enforced by Ruff. Prefer single quotes for strings and avoid trailing commas when formatting through `poetry run ruff format`. Follow standard naming: modules and packages in `snake_case`, classes in `PascalCase`, functions, variables, and fixtures in `snake_case`. Keep CLI verbs first (`branch create`) and surface-friendly.

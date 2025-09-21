@@ -15,9 +15,8 @@ The application follows a dual-interface pattern:
 
 Both interfaces share common functionality but serve different use cases - CLI for scripting/automation, TUI for interactive browsing and management.
 
-The entry points are:
-- `claude-bushwack` (full command)
-- `cb` (short alias)
+The entry point is:
+- `claude-bushwack`
 
 ## Development Commands
 

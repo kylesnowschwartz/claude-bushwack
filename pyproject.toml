@@ -23,7 +23,6 @@ ruff = "^0.1.0"
 
 [tool.poetry.scripts]
 claude-bushwack = "claude_bushwack.cli:main"
-cb = "claude_bushwack.cli:main"
 
 [tool.ruff]
 line-length = 88
