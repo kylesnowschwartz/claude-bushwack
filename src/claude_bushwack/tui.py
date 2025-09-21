@@ -18,6 +18,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.events import Key
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import DirectoryTree, Footer, Input, Static, Tree
@@ -50,7 +51,6 @@ _HEADER_PREFIX = '    '
 _TREE_COLUMN_KEY = 'uuid'
 _TREE_HEADER = 'Conversation (UUID + summary)'
 _TREE_COLUMN_WIDTH = 48
-_METADATA_GAP = 2
 
 
 @dataclass
@@ -374,13 +374,40 @@ class BushwackApp(App):
 
   def compose(self) -> ComposeResult:
     """Create child widgets for the app."""
-    header = Static('', id='column_headers')
-    yield header
+    tree_header = Static('', id='tree_header')
+    tree_header.styles.height = 'auto'
+    tree_header.styles.width = '3fr'
+    metadata_header = Static('', id='metadata_header')
+    metadata_header.styles.height = 'auto'
+    metadata_header.styles.width = '2fr'
+    metadata_header.styles.text_align = 'left'
+    metadata_header.styles.padding = (0, 1)
+    header_row = Horizontal(tree_header, metadata_header, id='header_row')
+    header_row.styles.height = 'auto'
+    yield header_row
+
     conversation_tree = Tree('Conversations', id='conversation_tree')
     conversation_tree.show_root = True
     conversation_tree.show_guides = True
     conversation_tree.styles.height = '1fr'
-    yield conversation_tree
+    conversation_tree.styles.width = '3fr'
+
+    metadata_pane = Static('', id='metadata_pane')
+    metadata_pane.styles.height = '1fr'
+    metadata_pane.styles.text_align = 'left'
+    metadata_pane.styles.padding = (0, 1)
+    metadata_pane.expand = True
+
+    metadata_container = VerticalScroll(metadata_pane, id='metadata_container')
+    metadata_container.styles.height = '1fr'
+    metadata_container.styles.width = '2fr'
+    metadata_container.styles.min_width = '40'
+
+    split_view = Horizontal(conversation_tree, metadata_container, id='split_view')
+    split_view.styles.height = '1fr'
+    self.watch(conversation_tree, 'scroll_y', self._handle_tree_scroll, init=False)
+    yield split_view
+
     preview = Static('', id='preview_pane')
     preview.styles.height = '30%'
     preview.styles.padding = (1, 2)
@@ -450,6 +477,8 @@ class BushwackApp(App):
 
       if announce_scope:
         self.show_status(f'Scope: {scope}')
+      self._refresh_metadata_view()
+      self._sync_metadata_scroll()
     except Exception as exc:  # pragma: no cover - defensive logging
       tree.root.add_leaf(f'Error loading conversations: {exc}')
       self.show_status('Unable to load conversations')
@@ -870,6 +899,14 @@ class BushwackApp(App):
   def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
     self._set_selected_from_node(event.node)
 
+  def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+    self._refresh_metadata_view()
+    self._sync_metadata_scroll()
+
+  def on_tree_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
+    self._refresh_metadata_view()
+    self._sync_metadata_scroll()
+
   def show_status(self, message: str, duration: float = 3.0) -> None:
     status_line = self.query_one('#status_line', Static)
     status_line.update(message)
@@ -1022,6 +1059,9 @@ class BushwackApp(App):
       self._collapse_expanded_row()
       self._selected_uuid = None
       self._clear_preview()
+
+    self._refresh_metadata_view()
+    self._sync_metadata_scroll()
 
   def _expand_node_path(self, node: TreeNode) -> None:
     path: List[TreeNode] = []
@@ -1283,21 +1323,7 @@ class BushwackApp(App):
     self, data: ConversationNodeData, *, expanded: bool
   ) -> Text:
     tree_lines = self._build_tree_lines(data, expanded=expanded)
-    metadata_text = self._format_metadata_values(data.column_values)
-
-    lines: List[str] = []
-    if tree_lines:
-      first_line = tree_lines[0]
-    else:
-      first_line = self._pad_column('', _TREE_COLUMN_WIDTH)
-
-    if metadata_text:
-      first_line = f'{first_line}{" " * _METADATA_GAP}{metadata_text}'
-
-    lines.append(first_line)
-    if expanded and len(tree_lines) > 1:
-      lines.extend(tree_lines[1:])
-
+    lines = tree_lines or [self._pad_column('', _TREE_COLUMN_WIDTH)]
     label = Text('\n'.join(lines))
     label.no_wrap = not expanded
     return label
@@ -1333,10 +1359,6 @@ class BushwackApp(App):
 
     return [line.ljust(_TREE_COLUMN_WIDTH) for line in wrapped]
 
-  def _format_metadata_values(self, column_values: Dict[str, str]) -> str:
-    metadata = self._format_columns(column_values, '', prefix='', wrap=False)
-    return metadata.plain.rstrip()
-
   def _format_columns(
     self,
     column_values: Dict[str, str],
@@ -1345,12 +1367,13 @@ class BushwackApp(App):
     prefix: str = '',
     wrap: bool = False,
     layout: Optional[List[tuple[str, int, str]]] = None,
+    align: str = 'left',
   ) -> Text:
     segments = []
     column_layout = layout or self._column_layout()
     for key, width, _ in column_layout:
       value = column_values.get(key, '')
-      segments.append(self._pad_column(value, width))
+      segments.append(self._pad_column(value, width, align=align))
 
     line = f'{prefix}{"  ".join(segments)}'
     if trailing:
@@ -1390,36 +1413,117 @@ class BushwackApp(App):
     self._expanded_node_uuid = current_uuid
 
   @staticmethod
-  def _pad_column(value: str, width: int) -> str:
+  def _pad_column(value: str, width: int, *, align: str = 'left') -> str:
     if width <= 0:
       return value
 
     content = value or ''
     if len(content) <= width:
+      if align == 'right':
+        return content.rjust(width)
       return content.ljust(width)
 
     if width <= 3:
       return content[:width]
 
-    return f'{content[: width - 3]}...'
+    truncated = f'{content[: width - 3]}...'
+    if align == 'right':
+      return truncated.rjust(width)
+    return truncated
 
   def _update_column_headers(self) -> None:
-    header = self.query_one('#column_headers', Static)
-    header.update(self._render_column_headers())
+    try:
+      tree_header = self.query_one('#tree_header', Static)
+      tree_header.update(self._render_tree_header())
+    except NoMatches:
+      pass
 
-  def _render_column_headers(self) -> Text:
-    metadata_values = {key: label for key, _, label in self._column_layout()}
-    tree_header = self._pad_column(_TREE_HEADER, _TREE_COLUMN_WIDTH)
-    metadata_text = self._format_columns(metadata_values, '', prefix='', wrap=False)
+    try:
+      metadata_header = self.query_one('#metadata_header', Static)
+      metadata_header.update(self._render_metadata_header())
+    except NoMatches:
+      pass
 
-    header_line = f'{_HEADER_PREFIX}{tree_header}'
-    metadata_plain = metadata_text.plain.rstrip()
-    if metadata_plain:
-      header_line = f'{header_line}{" " * _METADATA_GAP}{metadata_plain}'
-
-    header = Text(header_line)
+  def _render_tree_header(self) -> Text:
+    header_text = self._pad_column(_TREE_HEADER, _TREE_COLUMN_WIDTH)
+    header = Text(f'{_HEADER_PREFIX}{header_text}')
     header.stylize('bold')
     return header
+
+  def _render_metadata_header(self) -> Text:
+    metadata_values = {key: label for key, _, label in self._column_layout()}
+    metadata_text = self._format_columns(
+      metadata_values, '', prefix='', wrap=False, align='right'
+    )
+    metadata_text.stylize('bold')
+    return metadata_text
+
+  def _refresh_metadata_view(self) -> None:
+    try:
+      metadata = self.query_one('#metadata_pane', Static)
+    except NoMatches:
+      return
+
+    rows = self._build_metadata_rows()
+    if not rows:
+      renderable: Text | Group = Text('', justify='right')
+    elif len(rows) == 1:
+      renderable = rows[0]
+    else:
+      renderable = Group(*rows)
+
+    metadata.update(renderable)
+    self.call_after_refresh(self._sync_metadata_scroll)
+
+  def _build_metadata_rows(self) -> List[Text]:
+    try:
+      tree = self.query_one('#conversation_tree', Tree)
+    except NoMatches:
+      return []
+
+    layout = self._column_layout()
+    rows: List[Text] = []
+    selected_node = tree.cursor_node
+
+    for node in self._visible_tree_nodes(tree):
+      if isinstance(node.data, ConversationNodeData):
+        values = node.data.column_values
+      else:
+        values = {key: '' for key, _, _ in layout}
+      text = self._format_columns(
+        values, '', prefix='', wrap=False, layout=layout, align='right'
+      )
+      if node is selected_node:
+        text.stylize(Style(reverse=True))
+      rows.append(text)
+
+    return rows
+
+  def _visible_tree_nodes(self, tree: Tree) -> List[TreeNode]:
+    visible: List[TreeNode] = []
+
+    def _walk(node: TreeNode) -> None:
+      visible.append(node)
+      if node.is_expanded:
+        for child in node.children:
+          _walk(child)
+
+    for child in tree.root.children:
+      _walk(child)
+
+    return visible
+
+  def _sync_metadata_scroll(self) -> None:
+    try:
+      tree = self.query_one('#conversation_tree', Tree)
+      container = self.query_one('#metadata_container', VerticalScroll)
+    except NoMatches:
+      return
+
+    container.scroll_to(y=tree.scroll_y, animate=False)
+
+  def _handle_tree_scroll(self, old_value: float, new_value: float) -> None:
+    self._sync_metadata_scroll()
 
   def _column_layout(self) -> List[tuple[str, int, str]]:
     layout: List[tuple[str, int, str]] = list(_BASE_COLUMN_LAYOUT)

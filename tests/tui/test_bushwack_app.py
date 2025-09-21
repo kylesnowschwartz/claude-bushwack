@@ -13,12 +13,38 @@ import pytest
 
 from claude_bushwack.core import ClaudeConversationManager, ConversationFile
 from claude_bushwack.exceptions import ConversationNotFoundError
+from rich.text import Text
+
 from claude_bushwack.tui import (
   BushwackApp,
   ConversationNodeData,
   DirectoryPickerScreen,
   ExternalCommand,
 )
+
+
+def _extract_metadata_lines(renderable) -> List[Text]:
+  if isinstance(renderable, Text):
+    return [renderable]
+  lines: List[Text] = []
+  if hasattr(renderable, 'renderables'):
+    for item in renderable.renderables:
+      lines.extend(_extract_metadata_lines(item))
+  return lines
+
+
+def _visible_tree_nodes(tree) -> List:
+  visible = []
+
+  def _walk(node):
+    visible.append(node)
+    if getattr(node, 'is_expanded', False):
+      for child in node.children:
+        _walk(child)
+
+  for child in tree.root.children:
+    _walk(child)
+  return visible
 
 
 @pytest.fixture
@@ -607,16 +633,20 @@ def test_all_scope_includes_project_path_column(bushwack_app: BushwackApp):
   async def _interaction(pilot) -> None:
     await pilot.pause()
 
-    header = bushwack_app.query_one('#column_headers')
-    assert hasattr(header, 'renderable')
-    header_text = getattr(header.renderable, 'plain', str(header.renderable))
+    metadata_header = bushwack_app.query_one('#metadata_header')
+    assert hasattr(metadata_header, 'renderable')
+    header_text = getattr(
+      metadata_header.renderable, 'plain', str(metadata_header.renderable)
+    )
     assert 'Project Path' not in header_text
 
     bushwack_app.action_toggle_scope()
     await pilot.pause()
 
-    header = bushwack_app.query_one('#column_headers')
-    header_text = getattr(header.renderable, 'plain', str(header.renderable))
+    metadata_header = bushwack_app.query_one('#metadata_header')
+    header_text = getattr(
+      metadata_header.renderable, 'plain', str(metadata_header.renderable)
+    )
     assert 'Project Path' in header_text
 
     tree = bushwack_app.query_one('#conversation_tree')
@@ -624,10 +654,130 @@ def test_all_scope_includes_project_path_column(bushwack_app: BushwackApp):
     first = tree.root.children[0]
     tree.select_node(first)
     bushwack_app._set_selected_from_node(first)
+    bushwack_app._refresh_metadata_view()
     await pilot.pause()
-    assert first.label is not None
-    label_text = first.label.plain.split('\n', 1)[0]
-    assert label_text.count('~/') >= 1
+
+    metadata = bushwack_app.query_one('#metadata_pane')
+    assert metadata.renderable is not None
+    lines = _extract_metadata_lines(metadata.renderable)
+    assert any('~/' in line.plain for line in lines)
+
+  run_app(bushwack_app, _interaction)
+
+
+def test_split_layout_widgets_present(bushwack_app: BushwackApp):
+  async def _interaction(pilot) -> None:
+    await pilot.pause()
+
+    tree_header = bushwack_app.query_one('#tree_header')
+    tree_header_text = getattr(
+      tree_header.renderable, 'plain', str(tree_header.renderable)
+    )
+    assert 'Conversation' in tree_header_text
+
+    metadata_header = bushwack_app.query_one('#metadata_header')
+    metadata_header_text = getattr(
+      metadata_header.renderable, 'plain', str(metadata_header.renderable)
+    )
+    assert 'Modified' in metadata_header_text
+    metadata_pane = bushwack_app.query_one('#metadata_pane')
+    assert metadata_pane
+
+  run_app(bushwack_app, _interaction)
+
+
+def test_metadata_pane_right_aligned(bushwack_app: BushwackApp):
+  async def _interaction(pilot) -> None:
+    await pilot.pause()
+    bushwack_app._refresh_metadata_view()
+    metadata = bushwack_app.query_one('#metadata_pane')
+    assert metadata.renderable is not None
+    lines = _extract_metadata_lines(metadata.renderable)
+    assert lines, 'Expected metadata rows to be rendered'
+    layout = bushwack_app._column_layout()
+    widths = [width for _, width, _ in layout]
+    expected_length = sum(widths) + 2 * (len(widths) - 1)
+    for line in lines:
+      assert isinstance(line, Text)
+      plain = line.plain
+      assert len(plain) == expected_length
+      cursor = 0
+      for index, width in enumerate(widths):
+        segment = plain[cursor : cursor + width]
+        assert len(segment) == width
+        stripped = segment.rstrip()
+        if stripped:
+          assert segment.endswith(stripped)
+        cursor += width
+        if index < len(widths) - 1:
+          assert plain[cursor : cursor + 2] == '  '
+          cursor += 2
+
+  run_app(bushwack_app, _interaction)
+
+
+def test_metadata_rows_follow_tree_visibility(bushwack_app: BushwackApp):
+  async def _interaction(pilot) -> None:
+    tree = bushwack_app.query_one('#conversation_tree')
+    await pilot.pause()
+
+    bushwack_app._refresh_metadata_view()
+    metadata = bushwack_app.query_one('#metadata_pane')
+    rows_initial = _extract_metadata_lines(metadata.renderable)
+    visible_initial = _visible_tree_nodes(tree)
+    assert len(rows_initial) == len(visible_initial)
+
+    node_with_children = next(
+      node for node in visible_initial if getattr(node, 'children', [])
+    )
+    node_with_children.expand()
+    await pilot.pause()
+    bushwack_app._refresh_metadata_view()
+
+    rows_after_expand = _extract_metadata_lines(metadata.renderable)
+    visible_after_expand = _visible_tree_nodes(tree)
+    assert len(rows_after_expand) == len(visible_after_expand)
+
+    tree.select_node(node_with_children.children[0])
+    bushwack_app._set_selected_from_node(tree.cursor_node)
+    bushwack_app._refresh_metadata_view()
+    await pilot.pause()
+
+    selected_index = visible_after_expand.index(tree.cursor_node)
+    rows_with_selection = _extract_metadata_lines(metadata.renderable)
+    selected_row = rows_with_selection[selected_index]
+    assert any(span.style and span.style.reverse for span in selected_row.spans)
+
+    node_with_children.collapse()
+    await pilot.pause()
+    bushwack_app._refresh_metadata_view()
+
+    rows_after_collapse = _extract_metadata_lines(metadata.renderable)
+    visible_after_collapse = _visible_tree_nodes(tree)
+    assert len(rows_after_collapse) == len(visible_after_collapse)
+
+  run_app(bushwack_app, _interaction)
+
+
+def test_metadata_scroll_tracks_tree(bushwack_app: BushwackApp):
+  async def _interaction(pilot) -> None:
+    tree = bushwack_app.query_one('#conversation_tree')
+    metadata_container = bushwack_app.query_one('#metadata_container')
+    await pilot.pause()
+    bushwack_app._refresh_metadata_view()
+    await pilot.pause()
+
+    assert metadata_container.scroll_offset.y == tree.scroll_offset.y
+
+    for _ in range(25):
+      bushwack_app.action_cursor_down()
+      await pilot.pause()
+
+    assert metadata_container.scroll_offset.y == tree.scroll_offset.y
+
+    bushwack_app.action_cursor_top()
+    await pilot.pause()
+    assert metadata_container.scroll_offset.y == tree.scroll_offset.y
 
   run_app(bushwack_app, _interaction)
 
@@ -657,12 +807,11 @@ def test_tree_description_labels(bushwack_app: BushwackApp):
     assert 'User:' not in summary_label
     assert summary_snippet in summary_label
     uuid_display = summary_node.data.column_values['uuid']
-    modified_value = summary_node.data.column_values['modified']
     summary_line = summary_label.split('\n', 1)[0]
     assert uuid_display in summary_line
-    assert modified_value in summary_line
     assert summary_line.index(uuid_display) < summary_line.index(summary_snippet)
-    assert summary_line.index(summary_snippet) < summary_line.index(modified_value)
+    assert 'Msgs' not in summary_line
+    assert summary_node.data.column_values['modified'] not in summary_line
 
     preview_only_node = next(
       (
@@ -679,23 +828,16 @@ def test_tree_description_labels(bushwack_app: BushwackApp):
     assert 'User:' not in preview_label
     assert preview_snippet in preview_label
     preview_uuid = preview_only_node.data.column_values['uuid']
-    preview_modified = preview_only_node.data.column_values['modified']
     preview_line = preview_label.split('\n', 1)[0]
     assert preview_uuid in preview_line
-    assert preview_modified in preview_line
     assert preview_line.index(preview_uuid) < preview_line.index(preview_snippet)
-    assert preview_line.index(preview_snippet) < preview_line.index(preview_modified)
+    assert preview_only_node.data.column_values['modified'] not in preview_line
 
     bushwack_app._set_selected_from_node(summary_node)
     await pilot.pause()
     expanded_summary = summary_node.data.summary.strip() or summary_snippet
     assert summary_node.label.no_wrap is False
     assert expanded_summary in summary_node.label.plain
-    expanded_summary_label = summary_node.label.plain.split('\n', 1)[0]
-    assert modified_value in expanded_summary_label
-    assert expanded_summary_label.index(modified_value) > expanded_summary_label.index(
-      uuid_display
-    )
 
     bushwack_app._set_selected_from_node(preview_only_node)
     await pilot.pause()
@@ -703,11 +845,6 @@ def test_tree_description_labels(bushwack_app: BushwackApp):
     assert summary_node.label.no_wrap is True
     assert preview_only_node.label.no_wrap is False
     assert expanded_preview in preview_only_node.label.plain
-    expanded_preview_label = preview_only_node.label.plain.split('\n', 1)[0]
-    assert preview_modified in expanded_preview_label
-    assert expanded_preview_label.index(
-      preview_modified
-    ) > expanded_preview_label.index(preview_uuid)
 
   run_app(bushwack_app, _interaction)
 
