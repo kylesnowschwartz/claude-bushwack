@@ -11,11 +11,13 @@ from rich.text import Text
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.events import Key
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import DirectoryTree, Footer, Input, Static, Tree
 from textual.widgets.tree import TreeNode
 from textual.widgets._directory_tree import DirEntry
+from textual.css.query import NoMatches
 
 from .core import ClaudeConversationManager, ConversationFile
 from .exceptions import (
@@ -125,7 +127,12 @@ class ProjectDirectoryTree(DirectoryTree):
   def render_label(self, node: TreeNode, base_style, style) -> Text:  # type: ignore[override]
     data = node.data
     label = self._format_label(data.path) if data is not None else ''
-    return Text(label)
+    text = Text(label)
+    if base_style:
+      text.stylize(base_style)
+    if style:
+      text.stylize(style)
+    return text
 
   def decode_path(self, encoded_path: Path) -> Optional[Path]:
     if encoded_path == self._manager.claude_projects_dir:
@@ -143,7 +150,10 @@ class ProjectDirectoryTree(DirectoryTree):
 class DirectoryPickerScreen(ModalScreen[Optional[Path]]):
   """Modal for selecting a target Claude project directory."""
 
-  BINDINGS = [Binding('escape', 'cancel', 'Cancel', show=False)]
+  BINDINGS = [
+    Binding('escape', 'cancel', 'Cancel', show=False),
+    Binding('ctrl+f', 'focus_filter', 'Focus filter', show=False),
+  ]
 
   def __init__(
     self,
@@ -173,6 +183,7 @@ class DirectoryPickerScreen(ModalScreen[Optional[Path]]):
     self.set_focus(filter_input)
     if self._current_project is not None:
       self._focus_project(tree, self._current_project)
+    self._ensure_selection(tree)
 
   def _focus_project(self, tree: ProjectDirectoryTree, project_path: Path) -> None:
     encoded = self._manager._path_to_project_dir(project_path)
@@ -183,6 +194,10 @@ class DirectoryPickerScreen(ModalScreen[Optional[Path]]):
           tree.select_node(node)
           break
 
+  def _ensure_selection(self, tree: ProjectDirectoryTree) -> None:
+    if tree.cursor_node is None and tree.root.children:
+      tree.select_node(tree.root.children[0])
+
   def on_input_changed(self, event: Input.Changed) -> None:
     tree = self.query_one(ProjectDirectoryTree)
     tree.set_filter(event.value)
@@ -192,6 +207,50 @@ class DirectoryPickerScreen(ModalScreen[Optional[Path]]):
         tree.select_node(tree.root.children[0])
 
     self.call_after_refresh(_select_first)
+
+  def _move_cursor(self, tree: ProjectDirectoryTree, direction: str) -> None:
+    if not tree.root.children:
+      return
+    self._ensure_selection(tree)
+    if direction == 'down':
+      tree.action_cursor_down()
+    elif direction == 'up':
+      tree.action_cursor_up()
+    if tree.cursor_node is None:
+      self._ensure_selection(tree)
+
+  def on_key(self, event: Key) -> None:
+    if event.key not in {'down', 'up'}:
+      return
+    focused = self.focused
+    if not isinstance(focused, Input) or focused.id != 'picker_filter':
+      return
+    tree = self.query_one(ProjectDirectoryTree)
+    if not tree.root.children:
+      return
+    event.stop()
+    self._move_cursor(tree, event.key)
+    self.set_focus(tree)
+
+  def action_focus_filter(self) -> None:
+    filter_input = self.query_one('#picker_filter', Input)
+    self.set_focus(filter_input)
+    if hasattr(filter_input, 'cursor_position'):
+      filter_input.cursor_position = len(filter_input.value)
+
+  def on_input_submitted(self, event: Input.Submitted) -> None:
+    tree = self.query_one(ProjectDirectoryTree)
+    node = tree.cursor_node
+    if node is None:
+      return
+    data = node.data
+    if data is None or not hasattr(data, 'path'):
+      self.dismiss(None)
+      event.stop()
+      return
+    decoded = tree.decode_path(data.path)
+    self.dismiss(decoded)
+    event.stop()
 
   def on_directory_tree_directory_selected(
     self, event: DirectoryTree.DirectorySelected
@@ -603,11 +662,14 @@ class BushwackApp(App):
     self._status_timer = self.set_timer(duration, self._clear_status)
 
   def _clear_status(self) -> None:
-    status_line = self.query_one('#status_line', Static)
+    try:
+      status_line = self.query_one('#status_line', Static)
+    except NoMatches:
+      return
     status_line.update('')
     if self._status_timer:
       self._status_timer.stop()
-    self._status_timer = None
+      self._status_timer = None
 
   def _focus_on_uuid(self, tree: Tree, uuid: str) -> None:
     node = self._node_lookup.get(uuid)
