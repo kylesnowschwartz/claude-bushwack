@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -11,7 +13,12 @@ import pytest
 
 from claude_bushwack.core import ConversationFile
 from claude_bushwack.exceptions import ConversationNotFoundError
-from claude_bushwack.tui import BushwackApp, DirectoryPickerScreen, ExternalCommand
+from claude_bushwack.tui import (
+  BushwackApp,
+  ConversationNodeData,
+  DirectoryPickerScreen,
+  ExternalCommand,
+)
 
 
 @pytest.fixture
@@ -69,6 +76,128 @@ def test_toggle_scope_updates_status(
   run_app(bushwack_app, _interaction)
   assert any('Scope: all projects' in message for message in messages)
 
+
+def test_all_projects_scope_groups_by_project(
+  bushwack_app: BushwackApp,
+  populated_manager,
+  project_cwd: Path,
+):
+  recent_project = Path('/Users/kyle/Code/my-projects/zeta-project')
+  other_project = Path('/Users/kyle/Code/my-projects/alpha-project')
+
+  def create_conversation(
+    project_path: Path,
+    uuid: str,
+    *,
+    timestamp: datetime,
+    parent_uuid: Optional[str] = None,
+  ) -> None:
+    project_dir = populated_manager._path_to_project_dir(project_path)
+    target_dir = populated_manager.claude_projects_dir / project_dir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / f'{uuid}.jsonl'
+
+    iso_timestamp = timestamp.isoformat().replace('+00:00', 'Z')
+    user_uuid = f'{uuid}-user'
+    records = [
+      {
+        'uuid': user_uuid,
+        'parentUuid': parent_uuid,
+        'type': 'user',
+        'timestamp': iso_timestamp,
+        'gitBranch': 'main',
+        'message': {
+          'role': 'user',
+          'content': [{'type': 'text', 'text': f'Prompt for {uuid}'}],
+        },
+      },
+      {
+        'uuid': f'{uuid}-assistant',
+        'parentUuid': user_uuid,
+        'type': 'assistant',
+        'timestamp': iso_timestamp,
+        'gitBranch': 'main',
+        'message': {
+          'role': 'assistant',
+          'content': [{'type': 'text', 'text': 'Assistant reply'}],
+        },
+      },
+    ]
+
+    with target_file.open('w', encoding='utf-8') as handle:
+      for record in records:
+        handle.write(json.dumps(record))
+        handle.write('\n')
+
+    epoch = timestamp.timestamp()
+    os.utime(target_file, (epoch, epoch))
+
+  newest_uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+  older_uuid = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+  other_uuid = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+
+  newest_time = datetime(2024, 5, 5, tzinfo=timezone.utc)
+  older_time = datetime(2024, 5, 4, tzinfo=timezone.utc)
+  other_time = datetime(2024, 5, 3, tzinfo=timezone.utc)
+  default_time = datetime(2024, 5, 1, tzinfo=timezone.utc)
+
+  create_conversation(recent_project, newest_uuid, timestamp=newest_time)
+  create_conversation(recent_project, older_uuid, timestamp=older_time)
+  create_conversation(other_project, other_uuid, timestamp=other_time)
+
+  default_root = populated_manager.find_conversation(
+    '11111111-1111-1111-1111-111111111111'
+  )
+  os.utime(default_root.path, (default_time.timestamp(), default_time.timestamp()))
+
+  def formatted_project_label(project_path: Path) -> str:
+    project_dir = populated_manager._path_to_project_dir(project_path)
+    restored_path = populated_manager._project_dir_to_path(project_dir)
+    return bushwack_app._format_project_path(str(restored_path))
+
+  expected_recent_label = formatted_project_label(recent_project)
+  expected_other_label = formatted_project_label(other_project)
+  expected_current_label = formatted_project_label(project_cwd)
+
+  def plain_label(node) -> str:
+    label = node.label
+    if hasattr(label, 'plain'):
+      return label.plain
+    return str(label)
+
+  async def _interaction(pilot) -> None:
+    bushwack_app.action_toggle_scope()
+    await pilot.pause()
+
+    tree = bushwack_app.query_one('#conversation_tree')
+    children = tree.root.children
+    project_nodes = [
+      node
+      for node in children
+      if not isinstance(node.data, ConversationNodeData)
+      and plain_label(node) != 'Orphaned branches'
+    ]
+
+    assert len(project_nodes) == 3
+    assert [plain_label(node) for node in project_nodes] == [
+      expected_recent_label,
+      expected_other_label,
+      expected_current_label,
+    ]
+
+    first_project_children = [
+      child
+      for child in project_nodes[0].children
+      if isinstance(child.data, ConversationNodeData)
+    ]
+    assert [child.data.conversation.uuid for child in first_project_children] == [
+      newest_uuid,
+      older_uuid,
+    ]
+
+    assert plain_label(children[-1]) == 'Orphaned branches'
+
+  run_app(bushwack_app, _interaction)
 
 def test_branch_conversation_success(
   monkeypatch: pytest.MonkeyPatch,

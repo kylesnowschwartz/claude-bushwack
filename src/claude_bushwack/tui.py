@@ -2,6 +2,7 @@
 
 import json
 import shutil
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -430,26 +431,91 @@ class BushwackApp(App):
       conversations
     )
 
-    for root in sorted(roots, key=lambda conv: conv.last_modified, reverse=True):
-      self._add_conversation_to_tree(
-        tree.root, root, children_dict, display_data, is_root=True
-      )
-
     orphaned = [
       conv
       for conv in conversations
       if conv.parent_uuid and conv.parent_uuid not in {c.uuid for c in conversations}
     ]
 
-    if orphaned:
-      orphaned_node = tree.root.add('Orphaned branches')
-      orphaned_node.expand()
-      for conv in sorted(orphaned, key=lambda item: item.last_modified, reverse=True):
-        self._add_conversation_to_tree(
-          orphaned_node, conv, children_dict, display_data, is_orphaned=True
-        )
+    if self.show_all_projects:
+      self._populate_all_projects_tree(tree, roots, children_dict, display_data)
+    else:
+      self._populate_current_project_tree(
+        tree.root, roots, children_dict, display_data
+      )
+
+    self._add_orphaned_conversations(
+      tree.root, orphaned, children_dict, display_data
+    )
 
     tree.root.expand()
+
+  def _populate_current_project_tree(
+    self,
+    parent_node: TreeNode,
+    roots: List[ConversationFile],
+    children_dict: Dict[str, List[ConversationFile]],
+    display_data: Dict[str, ConversationDisplayData],
+  ) -> None:
+    for root in sorted(roots, key=lambda conv: conv.last_modified, reverse=True):
+      self._add_conversation_to_tree(
+        parent_node, root, children_dict, display_data, is_root=True
+      )
+
+  def _populate_all_projects_tree(
+    self,
+    tree: Tree,
+    roots: List[ConversationFile],
+    children_dict: Dict[str, List[ConversationFile]],
+    display_data: Dict[str, ConversationDisplayData],
+  ) -> None:
+    if not roots:
+      return
+
+    project_roots: Dict[str, List[ConversationFile]] = defaultdict(list)
+
+    for root in roots:
+      project_path = root.project_path or ''
+      project_roots[project_path].append(root)
+
+    project_paths = sorted(project_roots.keys())
+    project_paths.sort(
+      key=lambda path: max(
+        (conversation.last_modified for conversation in project_roots[path]),
+        default=datetime.min,
+      ),
+      reverse=True,
+    )
+
+    for project_path in project_paths:
+      formatted_path = self._format_project_path(project_path) or '(unknown project)'
+      label = Text(formatted_path, style='bold')
+      label.no_wrap = True
+      project_node = tree.root.add(label)
+      project_node.expand()
+      for conversation in sorted(
+        project_roots[project_path], key=lambda conv: conv.last_modified, reverse=True
+      ):
+        self._add_conversation_to_tree(
+          project_node, conversation, children_dict, display_data, is_root=True
+        )
+
+  def _add_orphaned_conversations(
+    self,
+    parent: TreeNode,
+    orphaned: List[ConversationFile],
+    children_dict: Dict[str, List[ConversationFile]],
+    display_data: Dict[str, ConversationDisplayData],
+  ) -> None:
+    if not orphaned:
+      return
+
+    orphaned_node = parent.add('Orphaned branches')
+    orphaned_node.expand()
+    for conv in sorted(orphaned, key=lambda item: item.last_modified, reverse=True):
+      self._add_conversation_to_tree(
+        orphaned_node, conv, children_dict, display_data, is_orphaned=True
+      )
 
   def _add_conversation_to_tree(
     self,
