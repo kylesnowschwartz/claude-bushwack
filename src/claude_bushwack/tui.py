@@ -7,18 +7,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from rich.console import Group
+from rich.panel import Panel
 from rich.style import Style
+from rich.table import Table
 from rich.text import Text
-
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.events import Key
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import DirectoryTree, Footer, Input, Static, Tree
-from textual.widgets.tree import TreeNode
 from textual.widgets._directory_tree import DirEntry
-from textual.css.query import NoMatches
+from textual.widgets.tree import TreeNode
 
 from .core import ClaudeConversationManager, ConversationFile
 from .exceptions import (
@@ -29,6 +31,7 @@ from .exceptions import (
 )
 
 _PREVIEW_LIMIT = 30
+_PREVIEW_PANE_LIMIT = 600
 
 _COLUMN_LAYOUT = [
   ('uuid', 12, 'UUID'),
@@ -54,6 +57,7 @@ class ConversationNodeData:
   git_branch: Optional[str] = None
   is_root: bool = False
   is_orphaned: bool = False
+  child_count: int = 0
 
 
 @dataclass
@@ -321,7 +325,8 @@ class BushwackApp(App):
     Binding('O', 'open_conversation', 'Open', show=True),
     Binding('shift+o', 'open_conversation', 'Open', show=False),
     Binding('r', 'refresh_tree', 'Refresh', show=True),
-    Binding('p', 'toggle_scope', 'Scope', show=True),
+    Binding('s', 'toggle_scope', 'Scope', show=True),
+    Binding('p', 'toggle_preview', 'Preview', show=True),
     Binding('question_mark', 'show_help', 'Help', show=False),
     Binding('q', 'quit', 'Quit', show=True),
   ]
@@ -333,6 +338,7 @@ class BushwackApp(App):
     self._status_timer: Optional[Timer] = None
     self._selected_uuid: Optional[str] = None
     self._node_lookup: Dict[str, TreeNode] = {}
+    self.preview_visible = False
 
   def compose(self) -> ComposeResult:
     """Create child widgets for the app."""
@@ -341,7 +347,14 @@ class BushwackApp(App):
     conversation_tree = Tree('Conversations', id='conversation_tree')
     conversation_tree.show_root = True
     conversation_tree.show_guides = True
+    conversation_tree.styles.height = '1fr'
     yield conversation_tree
+    preview = Static('', id='preview_pane')
+    preview.styles.height = '30%'
+    preview.styles.padding = (1, 2)
+    preview.styles.overflow_y = 'auto'
+    preview.display = False
+    yield preview
     yield Static('', id='status_line')
     yield Footer()
 
@@ -351,6 +364,8 @@ class BushwackApp(App):
     tree.focus()
     tree.root.expand()
     self._update_column_headers()
+    self._apply_preview_visibility()
+    self._clear_preview()
     self.load_conversations()
 
   def load_conversations(
@@ -363,6 +378,7 @@ class BushwackApp(App):
     tree.root.label = 'Conversations'
     tree.root.expand()
     self._node_lookup = {}
+    self._clear_preview()
 
     try:
       if self.show_all_projects:
@@ -475,6 +491,7 @@ class BushwackApp(App):
       git_branch=display_info.git_branch,
       is_root=is_root,
       is_orphaned=is_orphaned,
+      child_count=child_count,
     )
 
     node = parent_node.add(label_text, data=node_data)
@@ -660,6 +677,15 @@ class BushwackApp(App):
     self.show_status(f'Switched to {scope}')
     self.load_conversations(focus_uuid=self._selected_uuid)
 
+  def action_toggle_preview(self) -> None:
+    self.preview_visible = not self.preview_visible
+    self._apply_preview_visibility()
+    if self.preview_visible:
+      tree = self.query_one('#conversation_tree', Tree)
+      self._set_selected_from_node(tree.cursor_node)
+    state = 'shown' if self.preview_visible else 'hidden'
+    self.show_status(f'Preview {state}')
+
   def action_show_help(self) -> None:
     help_lines = [
       'Navigation:',
@@ -672,7 +698,8 @@ class BushwackApp(App):
       '  B              Branch selected conversation',
       '  O              Open in claude CLI',
       '  r              Refresh conversations',
-      '  p              Toggle project scope',
+      '  p              Toggle preview pane',
+      '  s              Toggle project scope',
       '  q              Quit',
     ]
     self.notify('\n'.join(help_lines))
@@ -703,6 +730,82 @@ class BushwackApp(App):
       self._status_timer.stop()
       self._status_timer = None
 
+  def _apply_preview_visibility(self) -> None:
+    try:
+      preview = self.query_one('#preview_pane', Static)
+    except NoMatches:
+      return
+    preview.display = self.preview_visible
+
+  def _clear_preview(self) -> None:
+    try:
+      preview = self.query_one('#preview_pane', Static)
+    except NoMatches:
+      return
+    placeholder = Panel(
+      Text('Select a conversation to view details'),
+      title='Conversation Preview',
+      border_style='cyan',
+    )
+    preview.update(placeholder)
+
+  def _update_preview_content(self, data: ConversationNodeData) -> None:
+    try:
+      preview = self.query_one('#preview_pane', Static)
+    except NoMatches:
+      return
+    preview.update(self._build_preview_renderable(data))
+
+  def _build_preview_renderable(self, data: ConversationNodeData) -> Panel:
+    conversation = data.conversation
+
+    metadata = Table.grid(padding=(0, 1))
+    metadata.add_column(style='bold cyan', justify='right', no_wrap=True)
+    metadata.add_column()
+
+    metadata.add_row('UUID', conversation.uuid)
+    metadata.add_row('Project', conversation.project_path)
+    metadata.add_row('File', str(conversation.path))
+    metadata.add_row(
+      'Last Modified', self._format_timestamp(conversation.last_modified)
+    )
+    created_display = (
+      self._format_timestamp(data.created_at) if data.created_at else '--'
+    )
+    metadata.add_row('Created', created_display)
+    metadata.add_row('Messages', str(data.message_count))
+    metadata.add_row('Branches', str(data.child_count))
+    metadata.add_row('Git Branch', data.git_branch or '-')
+
+    segments: List[Text] = [metadata]
+
+    summary_source = (data.summary or '').strip()
+    if summary_source:
+      segments.extend(
+        [
+          Text(),
+          Text('[ Assistant summary ]', style='bold'),
+          Text(self._truncate_preview_text(summary_source)),
+        ]
+      )
+
+    preview_source = (data.preview or '').strip()
+    if preview_source:
+      segments.extend(
+        [
+          Text(),
+          Text('[ First user prompt ]', style='bold'),
+          Text(self._truncate_preview_text(preview_source)),
+        ]
+      )
+
+    if len(segments) == 1:
+      segments.extend([Text(), Text('No preview details available', style='bold')])
+
+    content = Group(*segments)
+
+    return Panel(content, title='Conversation Preview', border_style='cyan')
+
   def _focus_on_uuid(self, tree: Tree, uuid: str) -> None:
     node = self._node_lookup.get(uuid)
     if node:
@@ -723,6 +826,10 @@ class BushwackApp(App):
   def _set_selected_from_node(self, node: Optional[TreeNode]) -> None:
     if node and isinstance(node.data, ConversationNodeData):
       self._selected_uuid = node.data.conversation.uuid
+      self._update_preview_content(node.data)
+    else:
+      self._selected_uuid = None
+      self._clear_preview()
 
   def _expand_node_path(self, node: TreeNode) -> None:
     path: List[TreeNode] = []
@@ -953,7 +1060,13 @@ class BushwackApp(App):
     compressed = ' '.join(value.split())
     if len(compressed) <= _PREVIEW_LIMIT:
       return compressed
-    return f'{compressed[:_PREVIEW_LIMIT - 3]}...'
+    return f'{compressed[: _PREVIEW_LIMIT - 3]}...'
+
+  @staticmethod
+  def _truncate_preview_text(value: str, limit: int = _PREVIEW_PANE_LIMIT) -> str:
+    if len(value) <= limit:
+      return value
+    return f'{value[: limit - 3]}...'
 
   def _format_columns(
     self, column_values: Dict[str, str], trailing: str, *, prefix: str = ''
@@ -963,7 +1076,7 @@ class BushwackApp(App):
       value = column_values.get(key, '')
       segments.append(self._pad_column(value, width))
 
-    line = f"{prefix}{'  '.join(segments)}"
+    line = f'{prefix}{"  ".join(segments)}'
     if trailing:
       line = f'{line}  {trailing}' if line else trailing
 
@@ -983,7 +1096,7 @@ class BushwackApp(App):
     if width <= 3:
       return content[:width]
 
-    return f'{content[:width - 3]}...'
+    return f'{content[: width - 3]}...'
 
   def _update_column_headers(self) -> None:
     header = self.query_one('#column_headers', Static)
