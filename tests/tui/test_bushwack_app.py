@@ -613,8 +613,10 @@ def test_tree_description_labels(bushwack_app: BushwackApp):
     )
     assert summary_node is not None
     summary_label = summary_node.label.plain
-    assert 'Summary:' in summary_label
+    summary_snippet = bushwack_app._format_summary(summary_node.data.summary)
+    assert 'Summary:' not in summary_label
     assert 'User:' not in summary_label
+    assert summary_snippet in summary_label
 
     preview_only_node = next(
       (
@@ -626,8 +628,23 @@ def test_tree_description_labels(bushwack_app: BushwackApp):
     )
     assert preview_only_node is not None
     preview_label = preview_only_node.label.plain
-    assert 'User:' in preview_label
+    preview_snippet = bushwack_app._format_preview(preview_only_node.data.preview)
     assert 'Summary:' not in preview_label
+    assert 'User:' not in preview_label
+    assert preview_snippet in preview_label
+
+    bushwack_app._set_selected_from_node(summary_node)
+    await pilot.pause()
+    expanded_summary = summary_node.data.summary.strip() or summary_snippet
+    assert summary_node.label.no_wrap is False
+    assert expanded_summary in summary_node.label.plain
+
+    bushwack_app._set_selected_from_node(preview_only_node)
+    await pilot.pause()
+    expanded_preview = preview_only_node.data.preview.strip() or preview_snippet
+    assert summary_node.label.no_wrap is True
+    assert preview_only_node.label.no_wrap is False
+    assert expanded_preview in preview_only_node.label.plain
 
   run_app(bushwack_app, _interaction)
 

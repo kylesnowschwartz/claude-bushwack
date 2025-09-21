@@ -3,10 +3,10 @@
 import json
 import shutil
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, cast
+from typing import Dict, List, Optional, Tuple, cast
 
 from rich.console import Group
 from rich.panel import Panel
@@ -62,6 +62,9 @@ class ConversationNodeData:
   is_root: bool = False
   is_orphaned: bool = False
   child_count: int = 0
+  column_values: Dict[str, str] = field(default_factory=dict)
+  collapsed_description: str = ''
+  full_description: str = ''
 
 
 @dataclass
@@ -358,6 +361,7 @@ class BushwackApp(App):
     self._status_timer: Optional[Timer] = None
     self._selected_uuid: Optional[str] = None
     self._node_lookup: Dict[str, TreeNode] = {}
+    self._expanded_node_uuid: Optional[str] = None
     self.preview_visible = False
     self._all_projects_cache: Optional[AllProjectsCache] = None
     self._all_projects_worker: Optional[Worker[AllProjectsCache]] = None
@@ -401,6 +405,7 @@ class BushwackApp(App):
     """Load conversations and populate the tree."""
     self._update_column_headers()
     tree = self.query_one('#conversation_tree', Tree)
+    self._collapse_expanded_row()
     tree.clear()
     tree.root.label = 'Conversations'
     tree.root.expand()
@@ -564,7 +569,7 @@ class BushwackApp(App):
     message_display = (
       str(display_info.message_count) if display_info.message_count else '0'
     )
-    description = self._format_description(
+    collapsed_description, full_description = self._build_description_texts(
       summary=display_info.summary or '', preview=display_info.preview or ''
     )
     child_count = len(children_dict.get(conversation.uuid, []))
@@ -579,7 +584,7 @@ class BushwackApp(App):
     }
     if self.show_all_projects:
       column_values['project'] = self._format_project_path(conversation.project_path)
-    label_text = self._format_columns(column_values, description)
+    label_text = self._format_columns(column_values, collapsed_description)
 
     node_data = ConversationNodeData(
       conversation=conversation,
@@ -591,6 +596,9 @@ class BushwackApp(App):
       is_root=is_root,
       is_orphaned=is_orphaned,
       child_count=child_count,
+      column_values=dict(column_values),
+      collapsed_description=collapsed_description,
+      full_description=full_description,
     )
 
     node = parent_node.add(label_text, data=node_data)
@@ -970,9 +978,11 @@ class BushwackApp(App):
 
   def _set_selected_from_node(self, node: Optional[TreeNode]) -> None:
     if node and isinstance(node.data, ConversationNodeData):
+      self._apply_row_expansion(node)
       self._selected_uuid = node.data.conversation.uuid
       self._update_preview_content(node.data)
     else:
+      self._collapse_expanded_row()
       self._selected_uuid = None
       self._clear_preview()
 
@@ -1202,13 +1212,19 @@ class BushwackApp(App):
   def _format_summary(summary: str) -> str:
     return BushwackApp._format_snippet(summary, '[no summary]')
 
-  def _format_description(self, *, summary: str, preview: str) -> str:
-    if summary:
-      summary_formatted = self._format_summary(summary)
-      return f'Summary: {summary_formatted}'
+  def _build_description_texts(self, *, summary: str, preview: str) -> Tuple[str, str]:
+    summary_clean = summary.strip()
+    if summary_clean:
+      summary_collapsed = self._format_summary(summary_clean)
+      return summary_collapsed, summary_clean
 
-    preview_formatted = self._format_preview(preview)
-    return f'User: {preview_formatted}'
+    preview_clean = preview.strip()
+    if preview_clean:
+      preview_collapsed = self._format_preview(preview_clean)
+      return preview_collapsed, preview_clean
+
+    placeholder = '[no summary]'
+    return placeholder, placeholder
 
   @staticmethod
   def _format_snippet(value: str, placeholder: str) -> str:
@@ -1227,7 +1243,12 @@ class BushwackApp(App):
     return f'{value[: limit - 3]}...'
 
   def _format_columns(
-    self, column_values: Dict[str, str], trailing: str, *, prefix: str = ''
+    self,
+    column_values: Dict[str, str],
+    trailing: str,
+    *,
+    prefix: str = '',
+    wrap: bool = False,
   ) -> Text:
     segments = []
     for key, width, _ in self._column_layout():
@@ -1239,8 +1260,40 @@ class BushwackApp(App):
       line = f'{line}  {trailing}' if line else trailing
 
     text = Text(line)
-    text.no_wrap = True
+    text.no_wrap = not wrap
     return text
+
+  def _update_node_label(self, node: TreeNode, *, expanded: bool) -> None:
+    if not isinstance(node.data, ConversationNodeData):
+      return
+
+    data = node.data
+    trailing = data.full_description if expanded else data.collapsed_description
+    trailing_text = trailing or '[no summary]'
+    label = self._format_columns(data.column_values, trailing_text, wrap=expanded)
+    node.label = label
+
+  def _collapse_expanded_row(self) -> None:
+    if not self._expanded_node_uuid:
+      return
+
+    node = self._node_lookup.get(self._expanded_node_uuid)
+    if node:
+      self._update_node_label(node, expanded=False)
+    self._expanded_node_uuid = None
+
+  def _apply_row_expansion(self, node: TreeNode) -> None:
+    if not isinstance(node.data, ConversationNodeData):
+      return
+
+    current_uuid = node.data.conversation.uuid
+    if self._expanded_node_uuid == current_uuid:
+      self._update_node_label(node, expanded=True)
+      return
+
+    self._collapse_expanded_row()
+    self._update_node_label(node, expanded=True)
+    self._expanded_node_uuid = current_uuid
 
   @staticmethod
   def _pad_column(value: str, width: int) -> str:
@@ -1263,7 +1316,7 @@ class BushwackApp(App):
   def _render_column_headers(self) -> Text:
     values = {key: label for key, _, label in self._column_layout()}
     header_text = self._format_columns(
-      values, 'Summary or user message', prefix=_HEADER_PREFIX
+      values, 'Conversation preview', prefix=_HEADER_PREFIX
     )
     header_text.stylize('bold')
     return header_text
