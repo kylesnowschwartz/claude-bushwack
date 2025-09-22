@@ -760,9 +760,7 @@ def test_metadata_rows_follow_tree_visibility(bushwack_app: BushwackApp):
 
 
 def test_metadata_scroll_tracks_tree(
-  bushwack_app: BushwackApp,
-  conversation_factory,
-  populated_manager,
+  bushwack_app: BushwackApp, conversation_factory, populated_manager
 ):
   long_summary = ' '.join(f'Line {index}' for index in range(60))
   base_time = datetime(2023, 1, 1, tzinfo=timezone.utc)
@@ -796,7 +794,8 @@ def test_metadata_scroll_tracks_tree(
       visible_nodes = _visible_tree_nodes(tree)
 
     target_index = next(
-      index for index, node in enumerate(visible_nodes)
+      index
+      for index, node in enumerate(visible_nodes)
       if getattr(getattr(node, 'data', None), 'conversation', None)
       and node.data.conversation.uuid == target_uuid
     )
@@ -813,7 +812,9 @@ def test_metadata_scroll_tracks_tree(
     assert selected_node.data.full_description.strip().startswith('Line 0')
     assert bushwack_app._expanded_node_uuid == selected_node.data.conversation.uuid
     selected_index = target_index
-    selected_height = len(bushwack_app._build_tree_lines(selected_node.data, expanded=True))
+    selected_height = len(
+      bushwack_app._build_tree_lines(selected_node.data, expanded=True)
+    )
     assert selected_height > 1
 
     top_line = int(metadata_container.scroll_offset.y)

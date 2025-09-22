@@ -386,22 +386,33 @@ class BushwackApp(App):
     header_row.styles.height = 'auto'
     yield header_row
 
+    shared_background = 'transparent'
+
     conversation_tree = Tree('Conversations', id='conversation_tree')
     conversation_tree.show_root = True
     conversation_tree.show_guides = True
     conversation_tree.styles.height = '1fr'
     conversation_tree.styles.width = '3fr'
+    conversation_tree.styles.background = shared_background
+    conversation_tree.styles.background_tint = 'transparent'
+    conversation_tree.styles.scrollbar_size_vertical = 0
+    conversation_tree.styles.scrollbar_size_horizontal = 0
 
     metadata_pane = Static('', id='metadata_pane')
     metadata_pane.styles.height = 'auto'
     metadata_pane.styles.text_align = 'left'
     metadata_pane.styles.padding = (0, 1)
+    metadata_pane.styles.background = 'transparent'
     metadata_pane.expand = True
 
     metadata_container = VerticalScroll(metadata_pane, id='metadata_container')
     metadata_container.styles.height = '1fr'
     metadata_container.styles.width = '2fr'
     metadata_container.styles.min_width = '40'
+    metadata_container.styles.background = shared_background
+    metadata_container.styles.background_tint = 'transparent'
+    metadata_container.styles.scrollbar_size_vertical = 0
+    metadata_container.styles.scrollbar_size_horizontal = 0
 
     split_view = Horizontal(conversation_tree, metadata_container, id='split_view')
     split_view.styles.height = '1fr'
@@ -420,6 +431,11 @@ class BushwackApp(App):
   def on_mount(self) -> None:
     """Called when the app starts."""
     tree = self.query_one('#conversation_tree', Tree)
+    tree.vertical_scrollbar.display = False
+    tree.horizontal_scrollbar.display = False
+    metadata_container = self.query_one('#metadata_container', VerticalScroll)
+    metadata_container.vertical_scrollbar.display = False
+    metadata_container.horizontal_scrollbar.display = False
     tree.focus()
     tree.root.expand()
     self._update_column_headers()
