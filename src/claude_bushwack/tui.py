@@ -28,1564 +28,1533 @@ from textual.widgets._directory_tree import DirEntry
 from textual.widgets.tree import TreeNode
 from textual.worker import Worker, WorkerState
 
-from .conversation_metadata import (ConversationMetadata,
-                                    extract_conversation_metadata)
+from .conversation_metadata import ConversationMetadata, extract_conversation_metadata
 from .core import ClaudeConversationManager, ConversationFile
-from .exceptions import (AmbiguousSessionIDError, BranchingError,
-                         ConversationNotFoundError, InvalidUUIDError)
+from .exceptions import (
+  AmbiguousSessionIDError,
+  BranchingError,
+  ConversationNotFoundError,
+  InvalidUUIDError,
+)
 
 _PREVIEW_LIMIT = 30
 _PREVIEW_PANE_LIMIT = 600
 
 _BASE_COLUMN_LAYOUT = [
-    ("modified", 12, "Modified"),
-    ("created", 12, "Created"),
-    ("children", 8, "Branches"),
-    ("messages", 6, "Msgs"),
-    ("branch", 18, "Git Branch"),
+  ('modified', 12, 'Modified'),
+  ('created', 12, 'Created'),
+  ('children', 8, 'Branches'),
+  ('messages', 6, 'Msgs'),
+  ('branch', 18, 'Git Branch'),
 ]
 
-_ALL_SCOPE_COLUMN = ("project", 32, "Project Path")
+_ALL_SCOPE_COLUMN = ('project', 32, 'Project Path')
 
-_HEADER_PREFIX = "    "
-_TREE_COLUMN_KEY = "uuid"
-_TREE_HEADER = "Conversation (UUID + summary)"
+_HEADER_PREFIX = '    '
+_TREE_COLUMN_KEY = 'uuid'
+_TREE_HEADER = 'Conversation (UUID + summary)'
 _TREE_COLUMN_WIDTH = 48
 
 
 @dataclass
 class ConversationNodeData:
-    """Data stored in tree nodes for conversations."""
+  """Data stored in tree nodes for conversations."""
 
-    conversation: ConversationFile
-    preview: str
-    summary: str = ""
-    created_at: Optional[datetime] = None
-    message_count: int = 0
-    git_branch: Optional[str] = None
-    is_root: bool = False
-    is_orphaned: bool = False
-    child_count: int = 0
-    column_values: Dict[str, str] = field(default_factory=dict)
-    collapsed_description: str = ""
-    full_description: str = ""
+  conversation: ConversationFile
+  preview: str
+  summary: str = ''
+  created_at: Optional[datetime] = None
+  message_count: int = 0
+  git_branch: Optional[str] = None
+  is_root: bool = False
+  is_orphaned: bool = False
+  child_count: int = 0
+  column_values: Dict[str, str] = field(default_factory=dict)
+  collapsed_description: str = ''
+  full_description: str = ''
 
 
 @dataclass
 class ConversationDisplayData:
-    """Metadata extracted from a conversation file for tree display."""
+  """Metadata extracted from a conversation file for tree display."""
 
-    preview: str = ""
-    summary: str = ""
-    created_at: Optional[datetime] = None
-    message_count: int = 0
-    git_branch: Optional[str] = None
+  preview: str = ''
+  summary: str = ''
+  created_at: Optional[datetime] = None
+  message_count: int = 0
+  git_branch: Optional[str] = None
 
 
 @dataclass
 class ExternalCommand:
-    """Describes a command to execute after the TUI exits."""
+  """Describes a command to execute after the TUI exits."""
 
-    executable: str
-    args: List[str]
+  executable: str
+  args: List[str]
 
 
 @dataclass
 class AllProjectsCache:
-    """Cached payload for the all-projects scope."""
+  """Cached payload for the all-projects scope."""
 
-    conversations: List[ConversationFile]
-    display_data: Dict[str, ConversationDisplayData]
+  conversations: List[ConversationFile]
+  display_data: Dict[str, ConversationDisplayData]
 
-    def is_empty(self) -> bool:
-        return not self.conversations
+  def is_empty(self) -> bool:
+    return not self.conversations
 
 
 class MetadataLines(ScrollView):
-    """Virtualized metadata pane aligned with the conversation tree rows.
+  """Virtualized metadata pane aligned with the conversation tree rows.
 
-    This widget mirrors the Tree widget's private ``_tree_lines`` cache to
-    determine row order and scroll offsets. Textual changes to that internal
-    structure will require verification.
-    """
+  This widget mirrors the Tree widget's private ``_tree_lines`` cache to
+  determine row order and scroll offsets. Textual changes to that internal
+  structure will require verification.
+  """
 
-    def __init__(
-        self,
-        *,
-        format_columns: Callable[..., Text],
-        column_layout: Callable[[], List[tuple[str, int, str]]],
-        highlight_style: Optional[Style] = None,
-        name: Optional[str] = None,
-        id: Optional[str] = None,
-        classes: Optional[str] = None,
-        disabled: bool = False,
-    ) -> None:
-        super().__init__(name=name, id=id, classes=classes, disabled=disabled)
-        self._tree: Optional[Tree] = None
-        self._format_columns = format_columns
-        self._column_layout = column_layout
-        self._highlight_style = highlight_style or Style(reverse=True)
-        self._highlight_line = -1
-        self._line_cache: Dict[tuple[int, bool], Strip] = {}
-        self.can_focus = False
-        self.virtual_size = Size(self._measure_width(), 0)
+  def __init__(
+    self,
+    *,
+    format_columns: Callable[..., Text],
+    column_layout: Callable[[], List[tuple[str, int, str]]],
+    highlight_style: Optional[Style] = None,
+    name: Optional[str] = None,
+    id: Optional[str] = None,
+    classes: Optional[str] = None,
+    disabled: bool = False,
+  ) -> None:
+    super().__init__(name=name, id=id, classes=classes, disabled=disabled)
+    self._tree: Optional[Tree] = None
+    self._format_columns = format_columns
+    self._column_layout = column_layout
+    self._highlight_style = highlight_style or Style(reverse=True)
+    self._highlight_line = -1
+    self._line_cache: Dict[tuple[int, bool], Strip] = {}
+    self.can_focus = False
+    self.virtual_size = Size(self._measure_width(), 0)
 
-    def attach_tree(self, tree: Tree) -> None:
-        if self._tree is tree:
-            return
-        self._tree = tree
-        self._invalidate_cache()
-        self.refresh_from_tree()
+  def attach_tree(self, tree: Tree) -> None:
+    if self._tree is tree:
+      return
+    self._tree = tree
+    self._invalidate_cache()
+    self.refresh_from_tree()
 
-    def refresh_from_tree(self) -> None:
-        tree = self._tree
-        if tree is None:
-            self.virtual_size = Size(self._measure_width(), 0)
-            self.refresh(layout=True)
-            return
+  def refresh_from_tree(self) -> None:
+    tree = self._tree
+    if tree is None:
+      self.virtual_size = Size(self._measure_width(), 0)
+      self.refresh(layout=True)
+      return
 
-        self._invalidate_cache()
-        height = self._tree_line_count(tree)
-        width = self._measure_width()
-        if self._highlight_line >= height:
-            self._highlight_line = -1
-        new_virtual_size = Size(width, height)
-        if new_virtual_size != self.virtual_size:
-            self.virtual_size = new_virtual_size
-            self.refresh(layout=True)
-        else:
-            self.refresh()
+    self._invalidate_cache()
+    height = self._tree_line_count(tree)
+    width = self._measure_width()
+    if self._highlight_line >= height:
+      self._highlight_line = -1
+    new_virtual_size = Size(width, height)
+    if new_virtual_size != self.virtual_size:
+      self.virtual_size = new_virtual_size
+      self.refresh(layout=True)
+    else:
+      self.refresh()
 
-    def highlight_node(self, node: Optional[TreeNode]) -> None:
-        line = -1 if node is None else getattr(node, "_line", -1)
-        self.highlight_line(line)
+  def highlight_node(self, node: Optional[TreeNode]) -> None:
+    line = -1 if node is None else getattr(node, '_line', -1)
+    self.highlight_line(line)
 
-    def highlight_line(self, line: int) -> None:
-        if line == self._highlight_line:
-            return
+  def highlight_line(self, line: int) -> None:
+    if line == self._highlight_line:
+      return
 
-        previous = self._highlight_line
-        self._highlight_line = line
+    previous = self._highlight_line
+    self._highlight_line = line
 
-        if previous != -1:
-            self._drop_line_cache(previous)
-            self.refresh_line(previous)
-        if line != -1:
-            self._drop_line_cache(line)
-            self.refresh_line(line)
+    if previous != -1:
+      self._drop_line_cache(previous)
+      self.refresh_line(previous)
+    if line != -1:
+      self._drop_line_cache(line)
+      self.refresh_line(line)
 
-    def refresh_line(self, line: int) -> None:
-        """Trigger a repaint after invalidating a cached line."""
-        del line
-        self.refresh()
+  def refresh_line(self, line: int) -> None:
+    """Trigger a repaint after invalidating a cached line."""
+    del line
+    self.refresh()
 
-    def sync_scroll(self, scroll_y: float) -> None:
-        self.scroll_to(y=scroll_y, animate=False)
+  def sync_scroll(self, scroll_y: float) -> None:
+    self.scroll_to(y=scroll_y, animate=False)
 
-    def clear(self) -> None:
-        self._invalidate_cache()
-        self.virtual_size = Size(self._measure_width(), 0)
-        self.refresh(layout=True)
+  def clear(self) -> None:
+    self._invalidate_cache()
+    self.virtual_size = Size(self._measure_width(), 0)
+    self.refresh(layout=True)
 
-    def render_line(self, y: int) -> Strip:
-        width = self.size.width
-        scroll_x = int(self.scroll_offset.x)
-        scroll_y = int(self.scroll_offset.y)
-        base_style = self.rich_style
-        tree = self._tree
+  def render_line(self, y: int) -> Strip:
+    width = self.size.width
+    scroll_x = int(self.scroll_offset.x)
+    scroll_y = int(self.scroll_offset.y)
+    base_style = self.rich_style
+    tree = self._tree
 
-        if tree is None:
-            return Strip.blank(width, base_style)
+    if tree is None:
+      return Strip.blank(width, base_style)
 
-        tree_lines = tree._tree_lines  # Textual internal cache; see class docstring.
-        absolute_line = y + scroll_y
-        if absolute_line >= len(tree_lines):
-            return Strip.blank(width, base_style)
+    tree_lines = tree._tree_lines  # Textual internal cache; see class docstring.
+    absolute_line = y + scroll_y
+    if absolute_line >= len(tree_lines):
+      return Strip.blank(width, base_style)
 
-        highlight = absolute_line == self._highlight_line
-        cache_key = (absolute_line, highlight)
-        strip = self._line_cache.get(cache_key)
-        if strip is None:
-            node = tree_lines[absolute_line].node
-            strip = self._render_line_for_node(node, highlight)
-            self._line_cache[cache_key] = strip
+    highlight = absolute_line == self._highlight_line
+    cache_key = (absolute_line, highlight)
+    strip = self._line_cache.get(cache_key)
+    if strip is None:
+      node = tree_lines[absolute_line].node
+      strip = self._render_line_for_node(node, highlight)
+      self._line_cache[cache_key] = strip
 
-        return strip.crop_extend(scroll_x, scroll_x + width, base_style)
+    return strip.crop_extend(scroll_x, scroll_x + width, base_style)
 
-    def _render_line_for_node(self, node: TreeNode, highlight: bool) -> Strip:
-        text = self._build_row_text(node, highlight)
-        return Strip(text.render(self.app.console))
+  def _render_line_for_node(self, node: TreeNode, highlight: bool) -> Strip:
+    text = self._build_row_text(node, highlight)
+    return Strip(text.render(self.app.console))
 
-    def _build_row_text(self, node: TreeNode, highlight: bool) -> Text:
-        layout = self._column_layout()
-        if isinstance(node.data, ConversationNodeData):
-            values = node.data.column_values
-        else:
-            values = {key: "" for key, _, _ in layout}
+  def _build_row_text(self, node: TreeNode, highlight: bool) -> Text:
+    layout = self._column_layout()
+    if isinstance(node.data, ConversationNodeData):
+      values = node.data.column_values
+    else:
+      values = {key: '' for key, _, _ in layout}
 
-        text = self._format_columns(
-            values, "", prefix="", wrap=False, layout=layout, align="right"
-        )
+    text = self._format_columns(
+      values, '', prefix='', wrap=False, layout=layout, align='right'
+    )
 
-        if highlight:
-            text = text.copy()
-            text.stylize(self._highlight_style)
+    if highlight:
+      text = text.copy()
+      text.stylize(self._highlight_style)
 
-        return text
+    return text
 
-    def export_rows(self) -> List[Text]:
-        tree = self._tree
-        if tree is None:
-            return []
-        rows: List[Text] = []
-        for index, line in enumerate(
-            tree._tree_lines
-        ):  # Textual internal cache; see class docstring.
-            node = line.node
-            if getattr(node, "is_root", False):
-                continue
-            rows.append(self._build_row_text(node, index == self._highlight_line))
-        return rows
+  def export_rows(self) -> List[Text]:
+    tree = self._tree
+    if tree is None:
+      return []
+    rows: List[Text] = []
+    for index, line in enumerate(
+      tree._tree_lines
+    ):  # Textual internal cache; see class docstring.
+      node = line.node
+      if getattr(node, 'is_root', False):
+        continue
+      rows.append(self._build_row_text(node, index == self._highlight_line))
+    return rows
 
-    def _tree_line_count(self, tree: Tree) -> int:
-        try:
-            return len(tree._tree_lines)
-        except Exception:
-            return 0
+  def _tree_line_count(self, tree: Tree) -> int:
+    try:
+      return len(tree._tree_lines)
+    except Exception:
+      return 0
 
-    def _measure_width(self) -> int:
-        layout = self._column_layout()
-        if not layout:
-            return 0
-        column_widths = sum(width for _, width, _ in layout)
-        separators = max(len(layout) - 1, 0) * 2
-        return column_widths + separators
+  def _measure_width(self) -> int:
+    layout = self._column_layout()
+    if not layout:
+      return 0
+    column_widths = sum(width for _, width, _ in layout)
+    separators = max(len(layout) - 1, 0) * 2
+    return column_widths + separators
 
-    def _invalidate_cache(self) -> None:
-        self._line_cache.clear()
+  def _invalidate_cache(self) -> None:
+    self._line_cache.clear()
 
-    def _drop_line_cache(self, line: int) -> None:
-        self._line_cache.pop((line, True), None)
-        self._line_cache.pop((line, False), None)
+  def _drop_line_cache(self, line: int) -> None:
+    self._line_cache.pop((line, True), None)
+    self._line_cache.pop((line, False), None)
 
 
 class ProjectDirectoryTree(DirectoryTree):
-    """Directory tree constrained to Claude project folders."""
+  """Directory tree constrained to Claude project folders."""
 
-    COMPONENT_CLASSES = DirectoryTree.COMPONENT_CLASSES
-    DEFAULT_CSS = DirectoryTree.DEFAULT_CSS
+  COMPONENT_CLASSES = DirectoryTree.COMPONENT_CLASSES
+  DEFAULT_CSS = DirectoryTree.DEFAULT_CSS
 
-    def __init__(
-        self,
-        manager: ClaudeConversationManager,
-        *,
-        name: Optional[str] = None,
-        id: Optional[str] = None,
-        classes: Optional[str] = None,
-        disabled: bool = False,
-    ) -> None:
-        super().__init__(
-            manager.claude_projects_dir,
-            name=name,
-            id=id,
-            classes=classes,
-            disabled=disabled,
-        )
-        self._manager = manager
-        self._filter_text = ""
-        self._current_project_token: Optional[str] = None
-        self.show_root = False
+  def __init__(
+    self,
+    manager: ClaudeConversationManager,
+    *,
+    name: Optional[str] = None,
+    id: Optional[str] = None,
+    classes: Optional[str] = None,
+    disabled: bool = False,
+  ) -> None:
+    super().__init__(
+      manager.claude_projects_dir, name=name, id=id, classes=classes, disabled=disabled
+    )
+    self._manager = manager
+    self._filter_text = ''
+    self._current_project_token: Optional[str] = None
+    self.show_root = False
 
-    def set_filter(self, value: str) -> None:
-        normalized = value.strip().lower()
-        if normalized == self._filter_text:
-            return
-        self._filter_text = normalized
-        self.reload()
+  def set_filter(self, value: str) -> None:
+    normalized = value.strip().lower()
+    if normalized == self._filter_text:
+      return
+    self._filter_text = normalized
+    self.reload()
 
-    def filter_paths(self, paths):
-        directories = [path for path in paths if self._safe_is_dir(path)]
-        if not self._filter_text:
-            return directories
-        filtered = []
-        for path in directories:
-            label = self._format_label(path)
-            if (
-                self._filter_text in label.lower()
-                or self._filter_text in path.name.lower()
-            ):
-                filtered.append(path)
-        return filtered
+  def filter_paths(self, paths):
+    directories = [path for path in paths if self._safe_is_dir(path)]
+    if not self._filter_text:
+      return directories
+    filtered = []
+    for path in directories:
+      label = self._format_label(path)
+      if self._filter_text in label.lower() or self._filter_text in path.name.lower():
+        filtered.append(path)
+    return filtered
 
-    def _populate_node(self, node: TreeNode, content) -> None:
-        node.remove_children()
-        for path in content:
-            if not self._safe_is_dir(path):
-                continue
-            label = self._format_label(path)
-            child = node.add(label, data=DirEntry(path), allow_expand=False)
-            child.allow_expand = False
-        node.expand()
+  def _populate_node(self, node: TreeNode, content) -> None:
+    node.remove_children()
+    for path in content:
+      if not self._safe_is_dir(path):
+        continue
+      label = self._format_label(path)
+      child = node.add(label, data=DirEntry(path), allow_expand=False)
+      child.allow_expand = False
+    node.expand()
 
-    def decode_path(self, encoded_path: Path) -> Optional[Path]:
-        if encoded_path == self._manager.claude_projects_dir:
-            return None
-        try:
-            return self._manager._project_dir_to_path(encoded_path.name)
-        except Exception:
-            return None
+  def decode_path(self, encoded_path: Path) -> Optional[Path]:
+    if encoded_path == self._manager.claude_projects_dir:
+      return None
+    try:
+      return self._manager._project_dir_to_path(encoded_path.name)
+    except Exception:
+      return None
 
-    def _format_label(self, path: Path) -> str:
-        decoded = self.decode_path(path)
-        return str(decoded) if decoded is not None else path.name
+  def _format_label(self, path: Path) -> str:
+    decoded = self.decode_path(path)
+    return str(decoded) if decoded is not None else path.name
 
-    def set_current_project(self, project_path: Optional[Path]) -> None:
-        if project_path is None:
-            self._current_project_token = None
-            self.refresh(layout=True)
-            return
-        try:
-            self._current_project_token = self._manager._path_to_project_dir(
-                project_path
-            )
-        except Exception:
-            self._current_project_token = None
-        self.refresh(layout=True)
+  def set_current_project(self, project_path: Optional[Path]) -> None:
+    if project_path is None:
+      self._current_project_token = None
+      self.refresh(layout=True)
+      return
+    try:
+      self._current_project_token = self._manager._path_to_project_dir(project_path)
+    except Exception:
+      self._current_project_token = None
+    self.refresh(layout=True)
 
-    def _is_current_project(self, node: TreeNode) -> bool:
-        if self._current_project_token is None:
-            return False
-        data = node.data
-        if data is None or not hasattr(data, "path"):
-            return False
-        return data.path.name == self._current_project_token
+  def _is_current_project(self, node: TreeNode) -> bool:
+    if self._current_project_token is None:
+      return False
+    data = node.data
+    if data is None or not hasattr(data, 'path'):
+      return False
+    return data.path.name == self._current_project_token
 
-    def render_label(  # type: ignore[override]
-        self, node: TreeNode, base_style: Style, style: Style
-    ) -> Text:
-        data = node.data
-        label = self._format_label(data.path) if data is not None else ""
+  def render_label(  # type: ignore[override]
+    self, node: TreeNode, base_style: Style, style: Style
+  ) -> Text:
+    data = node.data
+    label = self._format_label(data.path) if data is not None else ''
 
-        combined_style = Style()
-        if isinstance(base_style, Style):
-            combined_style += base_style
-        if isinstance(style, Style):
-            combined_style += style
+    combined_style = Style()
+    if isinstance(base_style, Style):
+      combined_style += base_style
+    if isinstance(style, Style):
+      combined_style += style
 
-        text = Text(label, style=combined_style)
-        if self._is_current_project(node):
-            marker_style = combined_style + Style(color="cyan")
-            text.append(" • current", style=marker_style)
-        return text
+    text = Text(label, style=combined_style)
+    if self._is_current_project(node):
+      marker_style = combined_style + Style(color='cyan')
+      text.append(' • current', style=marker_style)
+    return text
 
 
 class DirectoryPickerScreen(ModalScreen[Optional[Path]]):
-    """Modal for selecting a target Claude project directory."""
+  """Modal for selecting a target Claude project directory."""
 
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel", show=False),
-        Binding("ctrl+f", "focus_filter", "Focus filter", show=False),
-    ]
+  BINDINGS = [
+    Binding('escape', 'cancel', 'Cancel', show=False),
+    Binding('ctrl+f', 'focus_filter', 'Focus filter', show=False),
+  ]
 
-    def __init__(
-        self,
-        manager: ClaudeConversationManager,
-        *,
-        current_project: Optional[Path] = None,
-        initial_filter: str = "",
-    ) -> None:
-        super().__init__()
-        self._manager = manager
-        self._current_project = current_project
-        self._initial_filter = initial_filter.strip()
+  def __init__(
+    self,
+    manager: ClaudeConversationManager,
+    *,
+    current_project: Optional[Path] = None,
+    initial_filter: str = '',
+  ) -> None:
+    super().__init__()
+    self._manager = manager
+    self._current_project = current_project
+    self._initial_filter = initial_filter.strip()
 
-    def compose(self) -> ComposeResult:
-        yield Static("Select target project", id="picker_title")
-        yield Input(placeholder="Filter projects…", id="picker_filter")
-        yield ProjectDirectoryTree(self._manager, id="picker_tree")
-        yield Static(
-            "Enter to copy • Esc to cancel • Ctrl+F to focus filter", id="picker_hint"
-        )
+  def compose(self) -> ComposeResult:
+    yield Static('Select target project', id='picker_title')
+    yield Input(placeholder='Filter projects…', id='picker_filter')
+    yield ProjectDirectoryTree(self._manager, id='picker_tree')
+    yield Static(
+      'Enter to copy • Esc to cancel • Ctrl+F to focus filter', id='picker_hint'
+    )
 
-    def on_mount(self) -> None:
-        filter_input = self.query_one("#picker_filter", Input)
-        tree = self.query_one(ProjectDirectoryTree)
-        tree.root.expand()
-        tree.set_current_project(self._current_project)
-        if self._initial_filter:
-            filter_input.value = self._initial_filter
-            tree.set_filter(self._initial_filter)
-        self.set_focus(filter_input)
-        if self._current_project is not None:
-            self._focus_project(tree, self._current_project)
-        self._ensure_selection(tree)
+  def on_mount(self) -> None:
+    filter_input = self.query_one('#picker_filter', Input)
+    tree = self.query_one(ProjectDirectoryTree)
+    tree.root.expand()
+    tree.set_current_project(self._current_project)
+    if self._initial_filter:
+      filter_input.value = self._initial_filter
+      tree.set_filter(self._initial_filter)
+    self.set_focus(filter_input)
+    if self._current_project is not None:
+      self._focus_project(tree, self._current_project)
+    self._ensure_selection(tree)
 
-    def _focus_project(self, tree: ProjectDirectoryTree, project_path: Path) -> None:
-        encoded = self._manager._path_to_project_dir(project_path)
-        for node in tree.root.children:
-            data = node.data
-            if data is not None and getattr(data, "path", None) is not None:
-                if data.path.name == encoded:
-                    tree.select_node(node)
-                    break
+  def _focus_project(self, tree: ProjectDirectoryTree, project_path: Path) -> None:
+    encoded = self._manager._path_to_project_dir(project_path)
+    for node in tree.root.children:
+      data = node.data
+      if data is not None and getattr(data, 'path', None) is not None:
+        if data.path.name == encoded:
+          tree.select_node(node)
+          break
 
-    def _ensure_selection(self, tree: ProjectDirectoryTree) -> None:
-        if tree.cursor_node is None and tree.root.children:
-            tree.select_node(tree.root.children[0])
+  def _ensure_selection(self, tree: ProjectDirectoryTree) -> None:
+    if tree.cursor_node is None and tree.root.children:
+      tree.select_node(tree.root.children[0])
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        tree = self.query_one(ProjectDirectoryTree)
-        tree.set_filter(event.value)
+  def on_input_changed(self, event: Input.Changed) -> None:
+    tree = self.query_one(ProjectDirectoryTree)
+    tree.set_filter(event.value)
 
-        def _select_first() -> None:
-            if tree.root.children:
-                tree.select_node(tree.root.children[0])
+    def _select_first() -> None:
+      if tree.root.children:
+        tree.select_node(tree.root.children[0])
 
-        self.call_after_refresh(_select_first)
+    self.call_after_refresh(_select_first)
 
-    def _move_cursor(self, tree: ProjectDirectoryTree, direction: str) -> None:
-        if not tree.root.children:
-            return
-        self._ensure_selection(tree)
-        if direction == "down":
-            tree.action_cursor_down()
-        elif direction == "up":
-            tree.action_cursor_up()
-        if tree.cursor_node is None:
-            self._ensure_selection(tree)
+  def _move_cursor(self, tree: ProjectDirectoryTree, direction: str) -> None:
+    if not tree.root.children:
+      return
+    self._ensure_selection(tree)
+    if direction == 'down':
+      tree.action_cursor_down()
+    elif direction == 'up':
+      tree.action_cursor_up()
+    if tree.cursor_node is None:
+      self._ensure_selection(tree)
 
-    def on_key(self, event: Key) -> None:
-        if event.key not in {"down", "up"}:
-            return
-        focused = self.focused
-        if not isinstance(focused, Input) or focused.id != "picker_filter":
-            return
-        tree = self.query_one(ProjectDirectoryTree)
-        if not tree.root.children:
-            return
-        event.stop()
-        self._move_cursor(tree, event.key)
-        self.set_focus(tree)
+  def on_key(self, event: Key) -> None:
+    if event.key not in {'down', 'up'}:
+      return
+    focused = self.focused
+    if not isinstance(focused, Input) or focused.id != 'picker_filter':
+      return
+    tree = self.query_one(ProjectDirectoryTree)
+    if not tree.root.children:
+      return
+    event.stop()
+    self._move_cursor(tree, event.key)
+    self.set_focus(tree)
 
-    def action_focus_filter(self) -> None:
-        filter_input = self.query_one("#picker_filter", Input)
-        self.set_focus(filter_input)
-        if hasattr(filter_input, "cursor_position"):
-            filter_input.cursor_position = len(filter_input.value)
+  def action_focus_filter(self) -> None:
+    filter_input = self.query_one('#picker_filter', Input)
+    self.set_focus(filter_input)
+    if hasattr(filter_input, 'cursor_position'):
+      filter_input.cursor_position = len(filter_input.value)
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        tree = self.query_one(ProjectDirectoryTree)
-        node = tree.cursor_node
-        if node is None:
-            return
-        data = node.data
-        if data is None or not hasattr(data, "path"):
-            self.dismiss(None)
-            event.stop()
-            return
-        decoded = tree.decode_path(data.path)
-        self.dismiss(decoded)
-        event.stop()
+  def on_input_submitted(self, event: Input.Submitted) -> None:
+    tree = self.query_one(ProjectDirectoryTree)
+    node = tree.cursor_node
+    if node is None:
+      return
+    data = node.data
+    if data is None or not hasattr(data, 'path'):
+      self.dismiss(None)
+      event.stop()
+      return
+    decoded = tree.decode_path(data.path)
+    self.dismiss(decoded)
+    event.stop()
 
-    def on_directory_tree_directory_selected(
-        self, event: DirectoryTree.DirectorySelected
-    ) -> None:
-        event.stop()
-        tree = event.control
-        if not isinstance(tree, ProjectDirectoryTree):
-            self.dismiss(None)
-            return
+  def on_directory_tree_directory_selected(
+    self, event: DirectoryTree.DirectorySelected
+  ) -> None:
+    event.stop()
+    tree = event.control
+    if not isinstance(tree, ProjectDirectoryTree):
+      self.dismiss(None)
+      return
 
-        decoded = tree.decode_path(event.path)
-        if decoded is None:
-            self.dismiss(None)
-            return
+    decoded = tree.decode_path(event.path)
+    if decoded is None:
+      self.dismiss(None)
+      return
 
-        self.dismiss(decoded)
+    self.dismiss(decoded)
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
+  def action_cancel(self) -> None:
+    self.dismiss(None)
 
 
 class BushwackApp(App):
-    """Main TUI application for claude-bushwack."""
+  """Main TUI application for claude-bushwack."""
 
-    BINDINGS = [
-        Binding("j", "cursor_down", "Down", show=False),
-        Binding("k", "cursor_up", "Up", show=False),
-        Binding("h", "collapse_node", "Collapse", show=False),
-        Binding("l", "expand_node", "Expand", show=False),
-        Binding("tab", "toggle_branch", "Toggle branch", show=False, priority=True),
-        Binding("g", "cursor_top", "Top", show=False),
-        Binding("G", "cursor_bottom", "Bottom", show=False),
-        Binding("b", "branch_conversation", "Branch", show=True, key_display="B"),
-        Binding("B", "branch_conversation", "Branch", show=False),
-        Binding("c", "copy_move_conversation", "Copy Move", show=True, key_display="C"),
-        Binding("C", "copy_move_conversation", "Copy Move", show=False),
-        Binding("y", "yank_conversation", "Yank", show=True, key_display="Y"),
-        Binding("Y", "yank_conversation", "Yank", show=False),
-        Binding("o", "open_conversation", "Open", show=True, key_display="O"),
-        Binding("O", "open_conversation", "Open", show=False),
-        Binding("p", "toggle_preview", "Preview", show=True),
-        Binding("P", "toggle_preview", "Preview", show=False),
-        Binding("r", "refresh_tree", "Refresh", show=True),
-        Binding("R", "refresh_tree", "Refresh", show=False),
-        Binding("s", "toggle_scope", "Scope", show=True),
-        Binding("S", "toggle_scope", "Scope", show=False),
-        Binding("q", "quit", "Quit", show=True),
-        Binding("Q", "quit", "Quit", show=False),
-        Binding("question_mark", "show_help", "Help", show=False),
-    ]
+  BINDINGS = [
+    Binding('j', 'cursor_down', 'Down', show=False),
+    Binding('k', 'cursor_up', 'Up', show=False),
+    Binding('h', 'collapse_node', 'Collapse', show=False),
+    Binding('l', 'expand_node', 'Expand', show=False),
+    Binding('tab', 'toggle_branch', 'Toggle branch', show=False, priority=True),
+    Binding('g', 'cursor_top', 'Top', show=False),
+    Binding('G', 'cursor_bottom', 'Bottom', show=False),
+    Binding('b', 'branch_conversation', 'Branch', show=True, key_display='B'),
+    Binding('B', 'branch_conversation', 'Branch', show=False),
+    Binding('c', 'copy_move_conversation', 'Copy Move', show=True, key_display='C'),
+    Binding('C', 'copy_move_conversation', 'Copy Move', show=False),
+    Binding('y', 'yank_conversation', 'Yank', show=True, key_display='Y'),
+    Binding('Y', 'yank_conversation', 'Yank', show=False),
+    Binding('o', 'open_conversation', 'Open', show=True, key_display='O'),
+    Binding('O', 'open_conversation', 'Open', show=False),
+    Binding('p', 'toggle_preview', 'Preview', show=True),
+    Binding('P', 'toggle_preview', 'Preview', show=False),
+    Binding('r', 'refresh_tree', 'Refresh', show=True),
+    Binding('R', 'refresh_tree', 'Refresh', show=False),
+    Binding('s', 'toggle_scope', 'Scope', show=True),
+    Binding('S', 'toggle_scope', 'Scope', show=False),
+    Binding('q', 'quit', 'Quit', show=True),
+    Binding('Q', 'quit', 'Quit', show=False),
+    Binding('question_mark', 'show_help', 'Help', show=False),
+  ]
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.conversation_manager = ClaudeConversationManager()
-        self.show_all_projects = False
-        self._status_timer: Optional[Timer] = None
-        self._selected_uuid: Optional[str] = None
-        self._node_lookup: Dict[str, TreeNode] = {}
-        self._expanded_node_uuid: Optional[str] = None
-        self.preview_visible = False
-        self._all_projects_cache: Optional[AllProjectsCache] = None
-        self._all_projects_worker: Optional[Worker[AllProjectsCache]] = None
+  def __init__(self) -> None:
+    super().__init__()
+    self.conversation_manager = ClaudeConversationManager()
+    self.show_all_projects = False
+    self._status_timer: Optional[Timer] = None
+    self._selected_uuid: Optional[str] = None
+    self._node_lookup: Dict[str, TreeNode] = {}
+    self._expanded_node_uuid: Optional[str] = None
+    self.preview_visible = False
+    self._all_projects_cache: Optional[AllProjectsCache] = None
+    self._all_projects_worker: Optional[Worker[AllProjectsCache]] = None
 
-    def compose(self) -> ComposeResult:
-        """Create child widgets for the app."""
-        tree_header = Static("", id="tree_header")
-        tree_header.styles.height = "auto"
-        tree_header.styles.width = "3fr"
-        metadata_header = Static("", id="metadata_header")
-        metadata_header.styles.height = "auto"
-        metadata_header.styles.width = "2fr"
-        metadata_header.styles.text_align = "left"
-        metadata_header.styles.padding = (0, 1)
-        metadata_header.styles.color = "white"
-        header_row = Horizontal(tree_header, metadata_header, id="header_row")
-        header_row.styles.height = "auto"
-        yield header_row
+  def compose(self) -> ComposeResult:
+    """Create child widgets for the app."""
+    tree_header = Static('', id='tree_header')
+    tree_header.styles.height = 'auto'
+    tree_header.styles.width = '3fr'
+    metadata_header = Static('', id='metadata_header')
+    metadata_header.styles.height = 'auto'
+    metadata_header.styles.width = '2fr'
+    metadata_header.styles.text_align = 'left'
+    metadata_header.styles.padding = (0, 1)
+    metadata_header.styles.color = 'white'
+    header_row = Horizontal(tree_header, metadata_header, id='header_row')
+    header_row.styles.height = 'auto'
+    yield header_row
 
-        shared_background = "transparent"
+    shared_background = 'transparent'
 
-        conversation_tree = Tree("Conversations", id="conversation_tree")
-        conversation_tree.show_root = True
-        conversation_tree.show_guides = True
-        conversation_tree.styles.height = "1fr"
-        conversation_tree.styles.width = "3fr"
-        conversation_tree.styles.background = shared_background
-        conversation_tree.styles.background_tint = "transparent"
-        conversation_tree.styles.scrollbar_size_vertical = 0
-        conversation_tree.styles.scrollbar_size_horizontal = 0
+    conversation_tree = Tree('Conversations', id='conversation_tree')
+    conversation_tree.show_root = True
+    conversation_tree.show_guides = True
+    conversation_tree.styles.height = '1fr'
+    conversation_tree.styles.width = '3fr'
+    conversation_tree.styles.background = shared_background
+    conversation_tree.styles.background_tint = 'transparent'
+    conversation_tree.styles.scrollbar_size_vertical = 0
+    conversation_tree.styles.scrollbar_size_horizontal = 0
 
-        metadata_lines = MetadataLines(
-            format_columns=self._format_columns,
-            column_layout=self._column_layout,
-            id="metadata_lines",
-        )
-        metadata_lines.styles.height = "1fr"
-        metadata_lines.styles.width = "2fr"
-        metadata_lines.styles.min_width = "40"
-        metadata_lines.styles.padding = (0, 1)
-        metadata_lines.styles.background = shared_background
-        metadata_lines.styles.background_tint = "transparent"
-        metadata_lines.styles.color = "white"
-        metadata_lines.styles.scrollbar_size_vertical = 0
-        metadata_lines.styles.scrollbar_size_horizontal = 0
+    metadata_lines = MetadataLines(
+      format_columns=self._format_columns,
+      column_layout=self._column_layout,
+      id='metadata_lines',
+    )
+    metadata_lines.styles.height = '1fr'
+    metadata_lines.styles.width = '2fr'
+    metadata_lines.styles.min_width = '40'
+    metadata_lines.styles.padding = (0, 1)
+    metadata_lines.styles.background = shared_background
+    metadata_lines.styles.background_tint = 'transparent'
+    metadata_lines.styles.color = 'white'
+    metadata_lines.styles.scrollbar_size_vertical = 0
+    metadata_lines.styles.scrollbar_size_horizontal = 0
 
-        split_view = Horizontal(conversation_tree, metadata_lines, id="split_view")
-        split_view.styles.height = "1fr"
-        self.watch(conversation_tree, "scroll_y", self._handle_tree_scroll, init=False)
-        yield split_view
+    split_view = Horizontal(conversation_tree, metadata_lines, id='split_view')
+    split_view.styles.height = '1fr'
+    self.watch(conversation_tree, 'scroll_y', self._handle_tree_scroll, init=False)
+    yield split_view
 
-        preview = Static("", id="preview_pane")
-        preview.styles.height = "30%"
-        preview.styles.padding = (1, 2)
-        preview.styles.overflow_y = "auto"
-        preview.display = False
-        yield preview
-        yield Static("", id="status_line")
-        yield Footer()
+    preview = Static('', id='preview_pane')
+    preview.styles.height = '30%'
+    preview.styles.padding = (1, 2)
+    preview.styles.overflow_y = 'auto'
+    preview.display = False
+    yield preview
+    yield Static('', id='status_line')
+    yield Footer()
 
-    def on_mount(self) -> None:
-        """Called when the app starts."""
-        tree = self.query_one("#conversation_tree", Tree)
-        tree.vertical_scrollbar.display = False
-        tree.horizontal_scrollbar.display = False
-        metadata_lines = self.query_one("#metadata_lines", MetadataLines)
-        metadata_lines.vertical_scrollbar.display = False
-        metadata_lines.horizontal_scrollbar.display = False
-        metadata_lines.attach_tree(tree)
-        tree.focus()
-        tree.root.expand()
-        self._update_column_headers()
-        self._apply_preview_visibility()
-        self._clear_preview()
-        self.load_conversations()
-        self._prime_all_projects_cache()
+  def on_mount(self) -> None:
+    """Called when the app starts."""
+    tree = self.query_one('#conversation_tree', Tree)
+    tree.vertical_scrollbar.display = False
+    tree.horizontal_scrollbar.display = False
+    metadata_lines = self.query_one('#metadata_lines', MetadataLines)
+    metadata_lines.vertical_scrollbar.display = False
+    metadata_lines.horizontal_scrollbar.display = False
+    metadata_lines.attach_tree(tree)
+    tree.focus()
+    tree.root.expand()
+    self._update_column_headers()
+    self._apply_preview_visibility()
+    self._clear_preview()
+    self.load_conversations()
+    self._prime_all_projects_cache()
 
-    def load_conversations(
-        self,
-        focus_uuid: Optional[str] = None,
-        *,
-        announce_scope: bool = True,
-        force_cache_bypass: bool = False,
-    ) -> None:
-        """Load conversations and populate the tree."""
-        self._update_column_headers()
-        tree = self.query_one("#conversation_tree", Tree)
-        self._collapse_expanded_row()
-        tree.clear()
-        tree.root.label = "Conversations"
-        tree.root.expand()
-        self._node_lookup = {}
-        self._clear_preview()
+  def load_conversations(
+    self,
+    focus_uuid: Optional[str] = None,
+    *,
+    announce_scope: bool = True,
+    force_cache_bypass: bool = False,
+  ) -> None:
+    """Load conversations and populate the tree."""
+    self._update_column_headers()
+    tree = self.query_one('#conversation_tree', Tree)
+    self._collapse_expanded_row()
+    tree.clear()
+    tree.root.label = 'Conversations'
+    tree.root.expand()
+    self._node_lookup = {}
+    self._clear_preview()
 
-        try:
-            if self.show_all_projects:
-                cache = None if force_cache_bypass else self._all_projects_cache
-                if cache and not cache.is_empty():
-                    conversations = cache.conversations
-                    display_data = cache.display_data
-                else:
-                    conversations = self.conversation_manager.find_all_conversations(
-                        all_projects=True
-                    )
-                    display_data = self._build_display_data(conversations)
-                    self._all_projects_cache = AllProjectsCache(
-                        conversations=conversations, display_data=display_data
-                    )
-                scope = "all projects"
-            else:
-                conversations = self.conversation_manager.find_all_conversations(
-                    current_project_only=True
-                )
-                display_data = self._build_display_data(conversations)
-                scope = "current project"
-
-            self.populate_tree(tree, conversations, display_data)
-
-            target_uuid = focus_uuid or self._selected_uuid
-            if target_uuid:
-                self._focus_on_uuid(tree, target_uuid)
-            else:
-                self._focus_first_child(tree)
-
-            if announce_scope:
-                self.show_status(f"Scope: {scope}")
-            self._refresh_metadata_lines()
-            self._sync_metadata_scroll()
-        except Exception as exc:  # pragma: no cover - defensive logging
-            tree.root.add_leaf(f"Error loading conversations: {exc}")
-            self.show_status("Unable to load conversations")
-
-    def populate_tree(
-        self,
-        tree: Tree,
-        conversations: List[ConversationFile],
-        display_data: Dict[str, ConversationDisplayData],
-    ) -> None:
-        """Populate the tree widget with conversation data."""
-        if not conversations:
-            tree.root.add_leaf("No conversations found")
-            tree.root.expand()
-            return
-
-        roots, children_dict = self.conversation_manager.build_conversation_tree(
-            conversations
-        )
-
-        orphaned = [
-            conv
-            for conv in conversations
-            if conv.parent_uuid
-            and conv.parent_uuid not in {c.uuid for c in conversations}
-        ]
-
-        if self.show_all_projects:
-            self._populate_all_projects_tree(tree, roots, children_dict, display_data)
+    try:
+      if self.show_all_projects:
+        cache = None if force_cache_bypass else self._all_projects_cache
+        if cache and not cache.is_empty():
+          conversations = cache.conversations
+          display_data = cache.display_data
         else:
-            self._populate_current_project_tree(
-                tree.root, roots, children_dict, display_data
-            )
-
-        self._add_orphaned_conversations(
-            tree.root, orphaned, children_dict, display_data
-        )
-
-        tree.root.expand()
-
-    def _populate_current_project_tree(
-        self,
-        parent_node: TreeNode,
-        roots: List[ConversationFile],
-        children_dict: Dict[str, List[ConversationFile]],
-        display_data: Dict[str, ConversationDisplayData],
-    ) -> None:
-        for root in sorted(roots, key=lambda conv: conv.last_modified, reverse=True):
-            self._add_conversation_to_tree(
-                parent_node, root, children_dict, display_data, is_root=True
-            )
-
-    def _populate_all_projects_tree(
-        self,
-        tree: Tree,
-        roots: List[ConversationFile],
-        children_dict: Dict[str, List[ConversationFile]],
-        display_data: Dict[str, ConversationDisplayData],
-    ) -> None:
-        if not roots:
-            return
-
-        project_roots: Dict[str, List[ConversationFile]] = defaultdict(list)
-
-        for root in roots:
-            project_path = root.project_path or ""
-            project_roots[project_path].append(root)
-
-        project_paths = sorted(project_roots.keys())
-        project_paths.sort(
-            key=lambda path: max(
-                (conversation.last_modified for conversation in project_roots[path]),
-                default=datetime.min,
-            ),
-            reverse=True,
-        )
-
-        for project_path in project_paths:
-            formatted_path = (
-                self._format_project_path(project_path) or "(unknown project)"
-            )
-            label = Text(formatted_path, style="bold")
-            label.no_wrap = True
-            project_node = tree.root.add(label)
-            project_node.expand()
-            for conversation in sorted(
-                project_roots[project_path],
-                key=lambda conv: conv.last_modified,
-                reverse=True,
-            ):
-                self._add_conversation_to_tree(
-                    project_node,
-                    conversation,
-                    children_dict,
-                    display_data,
-                    is_root=True,
-                )
-
-    def _add_orphaned_conversations(
-        self,
-        parent: TreeNode,
-        orphaned: List[ConversationFile],
-        children_dict: Dict[str, List[ConversationFile]],
-        display_data: Dict[str, ConversationDisplayData],
-    ) -> None:
-        if not orphaned:
-            return
-
-        orphaned_node = parent.add("Orphaned branches")
-        orphaned_node.expand()
-        for conv in sorted(orphaned, key=lambda item: item.last_modified, reverse=True):
-            self._add_conversation_to_tree(
-                orphaned_node, conv, children_dict, display_data, is_orphaned=True
-            )
-
-    def _add_conversation_to_tree(
-        self,
-        parent_node: TreeNode,
-        conversation: ConversationFile,
-        children_dict: Dict[str, List[ConversationFile]],
-        display_data: Dict[str, ConversationDisplayData],
-        *,
-        is_root: bool = False,
-        is_orphaned: bool = False,
-    ) -> TreeNode:
-        """Add a conversation node to the tree."""
-        uuid_display = f"{conversation.uuid[:8]}..."
-        modified_display = self._format_timestamp(conversation.last_modified)
-        display_info = display_data.get(conversation.uuid, ConversationDisplayData())
-        created_display = (
-            self._format_timestamp(display_info.created_at)
-            if display_info.created_at
-            else "--"
-        )
-        branch_display = self._format_branch(display_info.git_branch)
-        message_display = (
-            str(display_info.message_count) if display_info.message_count else "0"
-        )
-        collapsed_description, full_description = self._build_description_texts(
-            summary=display_info.summary or "", preview=display_info.preview or ""
-        )
-        child_count = len(children_dict.get(conversation.uuid, []))
-        children_display = str(child_count) if child_count else "-"
-        column_values = {
-            "uuid": uuid_display,
-            "modified": modified_display,
-            "created": created_display,
-            "children": children_display,
-            "messages": message_display,
-            "branch": branch_display,
-        }
-        if self.show_all_projects:
-            column_values["project"] = self._format_project_path(
-                conversation.project_path
-            )
-        node_data = ConversationNodeData(
-            conversation=conversation,
-            preview=display_info.preview,
-            summary=display_info.summary,
-            created_at=display_info.created_at,
-            message_count=display_info.message_count,
-            git_branch=display_info.git_branch,
-            is_root=is_root,
-            is_orphaned=is_orphaned,
-            child_count=child_count,
-            column_values=dict(column_values),
-            collapsed_description=collapsed_description,
-            full_description=full_description,
-        )
-        label_text = self._render_label_for_node(node_data, expanded=False)
-
-        node = parent_node.add(label_text, data=node_data)
-        self._node_lookup[conversation.uuid] = node
-
-        if conversation.uuid in children_dict:
-            for child in sorted(
-                children_dict[conversation.uuid], key=lambda item: item.last_modified
-            ):
-                self._add_conversation_to_tree(node, child, children_dict, display_data)
-
-        return node
-
-    def action_cursor_down(self) -> None:
-        tree = self.query_one("#conversation_tree", Tree)
-        tree.action_cursor_down()
-        self._set_selected_from_node(tree.cursor_node)
-
-    def action_cursor_up(self) -> None:
-        tree = self.query_one("#conversation_tree", Tree)
-        tree.action_cursor_up()
-        self._set_selected_from_node(tree.cursor_node)
-
-    def action_collapse_node(self) -> None:
-        tree = self.query_one("#conversation_tree", Tree)
-        node = tree.cursor_node
-        if node and node.is_expanded:
-            node.collapse()
-        elif node and node.parent:
-            tree.select_node(node.parent)
-        self._set_selected_from_node(tree.cursor_node)
-
-    def action_expand_node(self) -> None:
-        tree = self.query_one("#conversation_tree", Tree)
-        node = tree.cursor_node
-        if node and node.children and not node.is_expanded:
-            node.expand()
-        elif node and node.children:
-            tree.select_node(node.children[0])
-        self._set_selected_from_node(tree.cursor_node)
-
-    def action_toggle_branch(self) -> None:
-        tree = self.query_one("#conversation_tree", Tree)
-        node = tree.cursor_node
-        if node and node.children:
-            if self._branch_is_expanded(node):
-                self._collapse_branch(node)
-            else:
-                self._expand_branch(node)
-            tree.select_node(node)
-            self._set_selected_from_node(node)
-
-    def action_cursor_top(self) -> None:
-        tree = self.query_one("#conversation_tree", Tree)
-        if tree.root.children:
-            tree.select_node(tree.root.children[0])
-            self._set_selected_from_node(tree.cursor_node)
-
-    def action_cursor_bottom(self) -> None:
-        tree = self.query_one("#conversation_tree", Tree)
-
-        def find_last(target: TreeNode) -> TreeNode:
-            if not target.children or not target.is_expanded:
-                return target
-            return find_last(target.children[-1])
-
-        if tree.root.children:
-            tree.select_node(find_last(tree.root.children[-1]))
-            self._set_selected_from_node(tree.cursor_node)
-
-    def action_branch_conversation(self) -> None:
-        tree = self.query_one("#conversation_tree", Tree)
-        node = tree.cursor_node
-        if not node or not isinstance(node.data, ConversationNodeData):
-            self.show_status("Select a conversation to branch")
-            return
-
-        conversation = node.data.conversation
-        target_project = Path(conversation.project_path)
-        self._perform_branch(conversation, target_project)
-
-    def _perform_branch(
-        self, conversation: ConversationFile, target_project: Path
-    ) -> None:
-        target = Path(target_project)
-        try:
-            new_conversation = self.conversation_manager.branch_conversation(
-                conversation.uuid, target_project_path=target
-            )
-        except (
-            AmbiguousSessionIDError,
-            BranchingError,
-            ConversationNotFoundError,
-            InvalidUUIDError,
-        ) as error:
-            self.show_status(f"Branch failed: {error}")
-            return
-        except Exception as error:  # pragma: no cover - defensive logging
-            self.show_status(f"Unexpected error: {error}")
-            return
-
-        target_display = str(target)
-        self.show_status(
-            f"Branched {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}... ({target_display})"
-        )
-        self._selected_uuid = new_conversation.uuid
-        self._prime_all_projects_cache(force=True)
-        self.load_conversations(
-            focus_uuid=new_conversation.uuid,
-            announce_scope=False,
-            force_cache_bypass=self.show_all_projects,
-        )
-
-    def action_copy_move_conversation(self) -> None:
-        tree = self.query_one("#conversation_tree", Tree)
-        node = tree.cursor_node
-        if not node or not isinstance(node.data, ConversationNodeData):
-            self.show_status("Select a conversation to copy")
-            return
-
-        conversation = node.data.conversation
-        current_path = Path(conversation.project_path)
-
-        picker = DirectoryPickerScreen(
-            self.conversation_manager, current_project=current_path
-        )
-
-        def _complete(selection: Optional[Path]) -> None:
-            if selection is None:
-                self.show_status("Copy move cancelled")
-                return
-            self._perform_copy_move(conversation, selection)
-
-        self.push_screen(picker, callback=_complete)
-
-    def _perform_copy_move(
-        self, conversation: ConversationFile, target_project: Path
-    ) -> None:
-        target = Path(target_project)
-        try:
-            new_conversation = self.conversation_manager.copy_move_conversation(
-                conversation.uuid, target_project_path=target
-            )
-        except (
-            AmbiguousSessionIDError,
-            BranchingError,
-            ConversationNotFoundError,
-            InvalidUUIDError,
-        ) as error:
-            self.show_status(f"Copy move failed: {error}")
-            return
-        except Exception as error:  # pragma: no cover - defensive logging
-            self.show_status(f"Unexpected error: {error}")
-            return
-
-        target_display = str(target)
-        self.show_status(
-            f"Copied {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}... ({target_display})"
-        )
-        self._selected_uuid = new_conversation.uuid
-        self._prime_all_projects_cache(force=True)
-        self.load_conversations(
-            focus_uuid=new_conversation.uuid,
-            announce_scope=False,
-            force_cache_bypass=self.show_all_projects,
-        )
-
-    def _copy_path_to_clipboard(self, value: str) -> bool:
-        driver = getattr(self, "_driver", None)
-        if driver is None:
-            return False
-
-        try:
-            import base64
-
-            payload = base64.b64encode(value.encode("utf-8")).decode("utf-8")
-            driver.write(f"\x1b]52;c;{payload}\a")
-        except Exception:
-            return False
-
-        return True
-
-    def action_yank_conversation(self) -> None:
-        tree = self.query_one("#conversation_tree", Tree)
-        node = tree.cursor_node
-        if not node or not isinstance(node.data, ConversationNodeData):
-            self.show_status("Select a conversation to yank")
-            return
-
-        conversation = node.data.conversation
-        resolved_path = conversation.path.resolve()
-
-        if not self._copy_path_to_clipboard(str(resolved_path)):
-            self.show_status("Clipboard unavailable")
-            return
-
-        self.show_status(f"Copied conversation path to clipboard: {resolved_path}")
-
-    def action_open_conversation(self) -> None:
-        tree = self.query_one("#conversation_tree", Tree)
-        node = tree.cursor_node
-        if not node or not isinstance(node.data, ConversationNodeData):
-            self.show_status("Select a conversation to open")
-            return
-
-        conversation = node.data.conversation
-        executable = shutil.which("claude")
-        if not executable:
-            self.show_status("claude CLI not found on PATH")
-            return
-
-        command = ExternalCommand(
-            executable=executable, args=["claude", "--resume", conversation.uuid]
-        )
-        self.exit(command)
-
-    def action_refresh_tree(self) -> None:
-        self.show_status("Refreshing conversations...")
-        self._prime_all_projects_cache(force=True)
-        self.load_conversations(
-            focus_uuid=self._selected_uuid, force_cache_bypass=self.show_all_projects
-        )
-
-    def action_toggle_scope(self) -> None:
-        self.show_all_projects = not self.show_all_projects
-        scope = "all projects" if self.show_all_projects else "current project"
-        self.show_status(f"Switched to {scope}")
-        self.load_conversations(focus_uuid=self._selected_uuid)
-
-    def action_toggle_preview(self) -> None:
-        self.preview_visible = not self.preview_visible
-        self._apply_preview_visibility()
-        if self.preview_visible:
-            tree = self.query_one("#conversation_tree", Tree)
-            self._set_selected_from_node(tree.cursor_node)
-        state = "shown" if self.preview_visible else "hidden"
-        self.show_status(f"Preview {state}")
-
-    def action_show_help(self) -> None:
-        help_lines = [
-            "Navigation:",
-            "  j/k or arrows  Move selection",
-            "  h/l            Collapse/expand",
-            "  Tab           Toggle whole branch",
-            "  g / G          Jump to top/bottom",
-            "",
-            "Actions:",
-            "  B              Branch selected conversation",
-            "  Y              Copy conversation path to clipboard",
-            "  O              Open in claude CLI",
-            "  r              Refresh conversations",
-            "  p              Toggle preview pane",
-            "  s              Toggle project scope",
-            "  q              Quit",
-        ]
-        self.notify("\n".join(help_lines))
-
-    def action_quit(self) -> None:
-        self.exit()
-
-    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
-        self._set_selected_from_node(event.node)
-
-    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
-        self._set_selected_from_node(event.node)
-
-    def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
-        self._refresh_metadata_lines()
-        self._sync_metadata_scroll()
-
-    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
-        self._refresh_metadata_lines()
-        self._sync_metadata_scroll()
-
-    def show_status(self, message: str, duration: float = 3.0) -> None:
-        status_line = self.query_one("#status_line", Static)
-        status_line.update(message)
-        if self._status_timer:
-            self._status_timer.stop()
-        self._status_timer = self.set_timer(duration, self._clear_status)
-
-    def _clear_status(self) -> None:
-        try:
-            status_line = self.query_one("#status_line", Static)
-        except NoMatches:
-            return
-        status_line.update("")
-        if self._status_timer:
-            self._status_timer.stop()
-            self._status_timer = None
-
-    def _apply_preview_visibility(self) -> None:
-        try:
-            preview = self.query_one("#preview_pane", Static)
-        except NoMatches:
-            return
-        preview.display = self.preview_visible
-
-    def _clear_preview(self) -> None:
-        try:
-            preview = self.query_one("#preview_pane", Static)
-        except NoMatches:
-            return
-        placeholder = Panel(
-            Text("Select a conversation to view details"),
-            title="Conversation Preview",
-            border_style="cyan",
-        )
-        preview.update(placeholder)
-
-    def _update_preview_content(self, data: ConversationNodeData) -> None:
-        try:
-            preview = self.query_one("#preview_pane", Static)
-        except NoMatches:
-            return
-        preview.update(self._build_preview_renderable(data))
-
-    def _build_preview_renderable(self, data: ConversationNodeData) -> Panel:
-        conversation = data.conversation
-
-        metadata = Table.grid(padding=(0, 1))
-        metadata.add_column(style="bold cyan", justify="right", no_wrap=True)
-        metadata.add_column()
-
-        metadata.add_row("UUID", conversation.uuid)
-        metadata.add_row(
-            "Project", self._format_project_path(conversation.project_path)
-        )
-        metadata.add_row("File", str(conversation.path))
-        metadata.add_row(
-            "Last Modified", self._format_timestamp(conversation.last_modified)
-        )
-        created_display = (
-            self._format_timestamp(data.created_at) if data.created_at else "--"
-        )
-        metadata.add_row("Created", created_display)
-        metadata.add_row("Messages", str(data.message_count))
-        metadata.add_row("Branches", str(data.child_count))
-        metadata.add_row("Git Branch", data.git_branch or "-")
-
-        segments: List[Text] = [metadata]
-
-        summary_source = (data.summary or "").strip()
-        if summary_source:
-            segments.extend(
-                [
-                    Text(),
-                    Text("[ Assistant summary ]", style="bold"),
-                    Text(self._truncate_preview_text(summary_source)),
-                ]
-            )
-
-        preview_source = (data.preview or "").strip()
-        if preview_source:
-            segments.extend(
-                [
-                    Text(),
-                    Text("[ First user prompt ]", style="bold"),
-                    Text(self._truncate_preview_text(preview_source)),
-                ]
-            )
-
-        if len(segments) == 1:
-            segments.extend(
-                [Text(), Text("No preview details available", style="bold")]
-            )
-
-        content = Group(*segments)
-
-        return Panel(content, title="Conversation Preview", border_style="cyan")
-
-    def _prime_all_projects_cache(self, *, force: bool = False) -> None:
-        worker = self._all_projects_worker
-        if worker and worker.is_running and not force:
-            return
-        self._all_projects_worker = self.run_worker(
-            self._load_all_projects_payload,
-            name="all-projects-cache",
-            group="all-projects-cache",
-            exclusive=True,
-            exit_on_error=False,
-            thread=True,
-        )
-
-    def _load_all_projects_payload(self) -> AllProjectsCache:
-        conversations = self.conversation_manager.find_all_conversations(
+          conversations = self.conversation_manager.find_all_conversations(
             all_projects=True
+          )
+          display_data = self._build_display_data(conversations)
+          self._all_projects_cache = AllProjectsCache(
+            conversations=conversations, display_data=display_data
+          )
+        scope = 'all projects'
+      else:
+        conversations = self.conversation_manager.find_all_conversations(
+          current_project_only=True
         )
         display_data = self._build_display_data(conversations)
-        return AllProjectsCache(conversations=conversations, display_data=display_data)
+        scope = 'current project'
 
-    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        worker = event.worker
-        if worker is not self._all_projects_worker:
-            return
+      self.populate_tree(tree, conversations, display_data)
 
-        if event.state == WorkerState.SUCCESS:
-            result = cast(Optional[AllProjectsCache], worker.result)
-            if result is None:
-                return
-            self._all_projects_cache = result
-            if self.show_all_projects:
-                self.load_conversations(
-                    focus_uuid=self._selected_uuid, announce_scope=False
-                )
-        elif event.state == WorkerState.ERROR:
-            self.show_status("Unable to preload all projects")
+      target_uuid = focus_uuid or self._selected_uuid
+      if target_uuid:
+        self._focus_on_uuid(tree, target_uuid)
+      else:
+        self._focus_first_child(tree)
 
-    def _focus_on_uuid(self, tree: Tree, uuid: str) -> None:
-        node = self._node_lookup.get(uuid)
-        if node:
-            self._expand_node_path(node)
-            tree.select_node(node)
-            self._set_selected_from_node(node)
-            tree.scroll_to_node(node, animate=False)
-        else:
-            self._focus_first_child(tree)
+      if announce_scope:
+        self.show_status(f'Scope: {scope}')
+      self._refresh_metadata_lines()
+      self._sync_metadata_scroll()
+    except Exception as exc:  # pragma: no cover - defensive logging
+      tree.root.add_leaf(f'Error loading conversations: {exc}')
+      self.show_status('Unable to load conversations')
 
-    def _focus_first_child(self, tree: Tree) -> None:
-        if tree.root.children:
-            first_child = tree.root.children[0]
-            tree.select_node(first_child)
-            self._set_selected_from_node(first_child)
-            tree.scroll_to_node(first_child, animate=False)
+  def populate_tree(
+    self,
+    tree: Tree,
+    conversations: List[ConversationFile],
+    display_data: Dict[str, ConversationDisplayData],
+  ) -> None:
+    """Populate the tree widget with conversation data."""
+    if not conversations:
+      tree.root.add_leaf('No conversations found')
+      tree.root.expand()
+      return
 
-    def _set_selected_from_node(self, node: Optional[TreeNode]) -> None:
-        if node and isinstance(node.data, ConversationNodeData):
-            self._apply_row_expansion(node)
-            self._selected_uuid = node.data.conversation.uuid
-            self._update_preview_content(node.data)
-        else:
-            self._collapse_expanded_row()
-            self._selected_uuid = None
-            self._clear_preview()
+    roots, children_dict = self.conversation_manager.build_conversation_tree(
+      conversations
+    )
 
-        self._highlight_metadata_node(node)
-        self._sync_metadata_scroll()
+    orphaned = [
+      conv
+      for conv in conversations
+      if conv.parent_uuid and conv.parent_uuid not in {c.uuid for c in conversations}
+    ]
 
-    def _expand_node_path(self, node: TreeNode) -> None:
-        path: List[TreeNode] = []
-        current: Optional[TreeNode] = node
+    if self.show_all_projects:
+      self._populate_all_projects_tree(tree, roots, children_dict, display_data)
+    else:
+      self._populate_current_project_tree(tree.root, roots, children_dict, display_data)
 
-        while current is not None:
-            path.append(current)
-            current = current.parent
+    self._add_orphaned_conversations(tree.root, orphaned, children_dict, display_data)
 
-        for ancestor in reversed(path):
-            ancestor.expand()
+    tree.root.expand()
 
-    def _branch_is_expanded(self, node: TreeNode) -> bool:
-        if not node.is_expanded:
-            return False
-        return any(child.is_expanded for child in node.children) or bool(node.children)
+  def _populate_current_project_tree(
+    self,
+    parent_node: TreeNode,
+    roots: List[ConversationFile],
+    children_dict: Dict[str, List[ConversationFile]],
+    display_data: Dict[str, ConversationDisplayData],
+  ) -> None:
+    for root in sorted(roots, key=lambda conv: conv.last_modified, reverse=True):
+      self._add_conversation_to_tree(
+        parent_node, root, children_dict, display_data, is_root=True
+      )
 
-    def _expand_branch(self, node: TreeNode) -> None:
-        stack: List[TreeNode] = [node]
-        while stack:
-            current = stack.pop()
-            current.expand()
-            stack.extend(reversed(current.children))
+  def _populate_all_projects_tree(
+    self,
+    tree: Tree,
+    roots: List[ConversationFile],
+    children_dict: Dict[str, List[ConversationFile]],
+    display_data: Dict[str, ConversationDisplayData],
+  ) -> None:
+    if not roots:
+      return
 
-    def _collapse_branch(self, node: TreeNode) -> None:
-        stack: List[TreeNode] = [node]
-        while stack:
-            current = stack.pop()
-            stack.extend(current.children)
-            current.collapse()
+    project_roots: Dict[str, List[ConversationFile]] = defaultdict(list)
 
-    def _build_display_data(
-        self, conversations: List[ConversationFile]
-    ) -> Dict[str, ConversationDisplayData]:
-        display_data: Dict[str, ConversationDisplayData] = {}
-        for conversation in conversations:
-            display_data[conversation.uuid] = self._extract_display_data(conversation)
-        return display_data
+    for root in roots:
+      project_path = root.project_path or ''
+      project_roots[project_path].append(root)
 
-    def _extract_display_data(
-        self, conversation: ConversationFile
-    ) -> ConversationDisplayData:
-        metadata: ConversationMetadata = extract_conversation_metadata(conversation)
+    project_paths = sorted(project_roots.keys())
+    project_paths.sort(
+      key=lambda path: max(
+        (conversation.last_modified for conversation in project_roots[path]),
+        default=datetime.min,
+      ),
+      reverse=True,
+    )
 
-        return ConversationDisplayData(
-            preview=metadata.preview,
-            summary=metadata.summary,
-            created_at=metadata.created_at,
-            message_count=metadata.message_count,
-            git_branch=metadata.git_branch,
+    for project_path in project_paths:
+      formatted_path = self._format_project_path(project_path) or '(unknown project)'
+      label = Text(formatted_path, style='bold')
+      label.no_wrap = True
+      project_node = tree.root.add(label)
+      project_node.expand()
+      for conversation in sorted(
+        project_roots[project_path], key=lambda conv: conv.last_modified, reverse=True
+      ):
+        self._add_conversation_to_tree(
+          project_node, conversation, children_dict, display_data, is_root=True
         )
 
-    @staticmethod
-    def _format_timestamp(value: datetime) -> str:
-        if value.tzinfo is not None:
-            try:
-                localized = value.astimezone()
-            except ValueError:
-                localized = value
-        else:
-            localized = value
-        return localized.strftime("%m-%d %H:%M")
+  def _add_orphaned_conversations(
+    self,
+    parent: TreeNode,
+    orphaned: List[ConversationFile],
+    children_dict: Dict[str, List[ConversationFile]],
+    display_data: Dict[str, ConversationDisplayData],
+  ) -> None:
+    if not orphaned:
+      return
 
-    @staticmethod
-    def _format_branch(branch: Optional[str]) -> str:
-        if not branch:
-            return "-"
-        trimmed = branch.strip()
-        if not trimmed:
-            return "-"
-        if len(trimmed) <= 32:
-            return trimmed
-        return f"{trimmed[:29]}..."
+    orphaned_node = parent.add('Orphaned branches')
+    orphaned_node.expand()
+    for conv in sorted(orphaned, key=lambda item: item.last_modified, reverse=True):
+      self._add_conversation_to_tree(
+        orphaned_node, conv, children_dict, display_data, is_orphaned=True
+      )
 
-    @staticmethod
-    def _format_project_path(project_path: Optional[str]) -> str:
-        if not project_path:
-            return ""
-        path_str = str(project_path)
-        home = str(Path.home())
-        if path_str == home:
-            return "~"
-        home_prefix = f"{home}/"
-        if path_str.startswith(home_prefix):
-            return f"~/{path_str[len(home_prefix):]}"
-        return path_str
+  def _add_conversation_to_tree(
+    self,
+    parent_node: TreeNode,
+    conversation: ConversationFile,
+    children_dict: Dict[str, List[ConversationFile]],
+    display_data: Dict[str, ConversationDisplayData],
+    *,
+    is_root: bool = False,
+    is_orphaned: bool = False,
+  ) -> TreeNode:
+    """Add a conversation node to the tree."""
+    uuid_display = f'{conversation.uuid[:8]}...'
+    modified_display = self._format_timestamp(conversation.last_modified)
+    display_info = display_data.get(conversation.uuid, ConversationDisplayData())
+    created_display = (
+      self._format_timestamp(display_info.created_at)
+      if display_info.created_at
+      else '--'
+    )
+    branch_display = self._format_branch(display_info.git_branch)
+    message_display = (
+      str(display_info.message_count) if display_info.message_count else '0'
+    )
+    collapsed_description, full_description = self._build_description_texts(
+      summary=display_info.summary or '', preview=display_info.preview or ''
+    )
+    child_count = len(children_dict.get(conversation.uuid, []))
+    children_display = str(child_count) if child_count else '-'
+    column_values = {
+      'uuid': uuid_display,
+      'modified': modified_display,
+      'created': created_display,
+      'children': children_display,
+      'messages': message_display,
+      'branch': branch_display,
+    }
+    if self.show_all_projects:
+      column_values['project'] = self._format_project_path(conversation.project_path)
+    node_data = ConversationNodeData(
+      conversation=conversation,
+      preview=display_info.preview,
+      summary=display_info.summary,
+      created_at=display_info.created_at,
+      message_count=display_info.message_count,
+      git_branch=display_info.git_branch,
+      is_root=is_root,
+      is_orphaned=is_orphaned,
+      child_count=child_count,
+      column_values=dict(column_values),
+      collapsed_description=collapsed_description,
+      full_description=full_description,
+    )
+    label_text = self._render_label_for_node(node_data, expanded=False)
 
-    @staticmethod
-    def _format_preview(preview: str) -> str:
-        return BushwackApp._format_snippet(preview, "[no user message]")
+    node = parent_node.add(label_text, data=node_data)
+    self._node_lookup[conversation.uuid] = node
 
-    @staticmethod
-    def _format_summary(summary: str) -> str:
-        return BushwackApp._format_snippet(summary, "[no summary]")
+    if conversation.uuid in children_dict:
+      for child in sorted(
+        children_dict[conversation.uuid], key=lambda item: item.last_modified
+      ):
+        self._add_conversation_to_tree(node, child, children_dict, display_data)
 
-    def _build_description_texts(
-        self, *, summary: str, preview: str
-    ) -> Tuple[str, str]:
-        summary_clean = summary.strip()
-        if summary_clean:
-            summary_collapsed = self._format_summary(summary_clean)
-            return summary_collapsed, summary_clean
+    return node
 
-        preview_clean = preview.strip()
-        if preview_clean:
-            preview_collapsed = self._format_preview(preview_clean)
-            return preview_collapsed, preview_clean
+  def action_cursor_down(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    tree.action_cursor_down()
+    self._set_selected_from_node(tree.cursor_node)
 
-        placeholder = "[no summary]"
-        return placeholder, placeholder
+  def action_cursor_up(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    tree.action_cursor_up()
+    self._set_selected_from_node(tree.cursor_node)
 
-    @staticmethod
-    def _format_snippet(value: str, placeholder: str) -> str:
-        if not value:
-            return placeholder
+  def action_collapse_node(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    node = tree.cursor_node
+    if node and node.is_expanded:
+      node.collapse()
+    elif node and node.parent:
+      tree.select_node(node.parent)
+    self._set_selected_from_node(tree.cursor_node)
 
-        compressed = " ".join(value.split())
-        if len(compressed) <= _PREVIEW_LIMIT:
-            return compressed
-        return f"{compressed[: _PREVIEW_LIMIT - 3]}..."
+  def action_expand_node(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    node = tree.cursor_node
+    if node and node.children and not node.is_expanded:
+      node.expand()
+    elif node and node.children:
+      tree.select_node(node.children[0])
+    self._set_selected_from_node(tree.cursor_node)
 
-    @staticmethod
-    def _truncate_preview_text(value: str, limit: int = _PREVIEW_PANE_LIMIT) -> str:
-        if len(value) <= limit:
-            return value
-        return f"{value[: limit - 3]}..."
+  def action_toggle_branch(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    node = tree.cursor_node
+    if node and node.children:
+      if self._branch_is_expanded(node):
+        self._collapse_branch(node)
+      else:
+        self._expand_branch(node)
+      tree.select_node(node)
+      self._set_selected_from_node(node)
 
-    def _render_label_for_node(
-        self, data: ConversationNodeData, *, expanded: bool
-    ) -> Text:
-        tree_lines = self._build_tree_lines(data, expanded=expanded)
-        lines = tree_lines or [self._pad_column("", _TREE_COLUMN_WIDTH)]
-        label = Text("\n".join(lines))
-        label.no_wrap = not expanded
-        return label
+  def action_cursor_top(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    if tree.root.children:
+      tree.select_node(tree.root.children[0])
+      self._set_selected_from_node(tree.cursor_node)
 
-    def _build_tree_lines(
-        self, data: ConversationNodeData, *, expanded: bool
-    ) -> List[str]:
-        uuid_value = data.column_values.get(_TREE_COLUMN_KEY, "")
-        description = (
-            data.full_description if expanded else data.collapsed_description
-        ) or "[no summary]"
+  def action_cursor_bottom(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
 
-        base_text = f"{uuid_value}  {description}".strip()
-        if not base_text:
-            base_text = uuid_value or "[no summary]"
+    def find_last(target: TreeNode) -> TreeNode:
+      if not target.children or not target.is_expanded:
+        return target
+      return find_last(target.children[-1])
 
-        if not expanded:
-            return [self._pad_column(base_text, _TREE_COLUMN_WIDTH)]
+    if tree.root.children:
+      tree.select_node(find_last(tree.root.children[-1]))
+      self._set_selected_from_node(tree.cursor_node)
 
-        subsequent_indent = " " * (len(uuid_value) + 2)
-        wrapper = textwrap.TextWrapper(
-            width=_TREE_COLUMN_WIDTH,
-            replace_whitespace=False,
-            drop_whitespace=False,
-            break_long_words=True,
-            break_on_hyphens=False,
-            initial_indent="",
-            subsequent_indent=subsequent_indent,
-        )
-        wrapped = wrapper.wrap(base_text)
-        if not wrapped:
-            wrapped = [""]
+  def action_branch_conversation(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    node = tree.cursor_node
+    if not node or not isinstance(node.data, ConversationNodeData):
+      self.show_status('Select a conversation to branch')
+      return
 
-        return [line.ljust(_TREE_COLUMN_WIDTH) for line in wrapped]
+    conversation = node.data.conversation
+    target_project = Path(conversation.project_path)
+    self._perform_branch(conversation, target_project)
 
-    def _format_columns(
-        self,
-        column_values: Dict[str, str],
-        trailing: str,
-        *,
-        prefix: str = "",
-        wrap: bool = False,
-        layout: Optional[List[tuple[str, int, str]]] = None,
-        align: str = "left",
-    ) -> Text:
-        segments = []
-        column_layout = layout or self._column_layout()
-        for key, width, _ in column_layout:
-            value = column_values.get(key, "")
-            segments.append(self._pad_column(value, width, align=align))
+  def _perform_branch(
+    self, conversation: ConversationFile, target_project: Path
+  ) -> None:
+    target = Path(target_project)
+    try:
+      new_conversation = self.conversation_manager.branch_conversation(
+        conversation.uuid, target_project_path=target
+      )
+    except (
+      AmbiguousSessionIDError,
+      BranchingError,
+      ConversationNotFoundError,
+      InvalidUUIDError,
+    ) as error:
+      self.show_status(f'Branch failed: {error}')
+      return
+    except Exception as error:  # pragma: no cover - defensive logging
+      self.show_status(f'Unexpected error: {error}')
+      return
 
-        line = f'{prefix}{"  ".join(segments)}'
-        if trailing:
-            line = f"{line}  {trailing}" if line else trailing
+    target_display = str(target)
+    self.show_status(
+      f'Branched {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}... ({target_display})'
+    )
+    self._selected_uuid = new_conversation.uuid
+    self._prime_all_projects_cache(force=True)
+    self.load_conversations(
+      focus_uuid=new_conversation.uuid,
+      announce_scope=False,
+      force_cache_bypass=self.show_all_projects,
+    )
 
-        text = Text(line)
-        text.stylize(Style(color="white"))
-        text.no_wrap = not wrap
-        return text
+  def action_copy_move_conversation(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    node = tree.cursor_node
+    if not node or not isinstance(node.data, ConversationNodeData):
+      self.show_status('Select a conversation to copy')
+      return
 
-    def _update_node_label(self, node: TreeNode, *, expanded: bool) -> None:
-        if not isinstance(node.data, ConversationNodeData):
-            return
+    conversation = node.data.conversation
+    current_path = Path(conversation.project_path)
 
-        data = node.data
-        node.label = self._render_label_for_node(data, expanded=expanded)
+    picker = DirectoryPickerScreen(
+      self.conversation_manager, current_project=current_path
+    )
 
-    def _collapse_expanded_row(self) -> None:
-        if not self._expanded_node_uuid:
-            return
+    def _complete(selection: Optional[Path]) -> None:
+      if selection is None:
+        self.show_status('Copy move cancelled')
+        return
+      self._perform_copy_move(conversation, selection)
 
-        node = self._node_lookup.get(self._expanded_node_uuid)
-        if node:
-            self._update_node_label(node, expanded=False)
-        self._expanded_node_uuid = None
+    self.push_screen(picker, callback=_complete)
 
-    def _apply_row_expansion(self, node: TreeNode) -> None:
-        if not isinstance(node.data, ConversationNodeData):
-            return
+  def _perform_copy_move(
+    self, conversation: ConversationFile, target_project: Path
+  ) -> None:
+    target = Path(target_project)
+    try:
+      new_conversation = self.conversation_manager.copy_move_conversation(
+        conversation.uuid, target_project_path=target
+      )
+    except (
+      AmbiguousSessionIDError,
+      BranchingError,
+      ConversationNotFoundError,
+      InvalidUUIDError,
+    ) as error:
+      self.show_status(f'Copy move failed: {error}')
+      return
+    except Exception as error:  # pragma: no cover - defensive logging
+      self.show_status(f'Unexpected error: {error}')
+      return
 
-        current_uuid = node.data.conversation.uuid
-        if self._expanded_node_uuid == current_uuid:
-            self._update_node_label(node, expanded=True)
-            return
+    target_display = str(target)
+    self.show_status(
+      f'Copied {conversation.uuid[:8]}... -> {new_conversation.uuid[:8]}... ({target_display})'
+    )
+    self._selected_uuid = new_conversation.uuid
+    self._prime_all_projects_cache(force=True)
+    self.load_conversations(
+      focus_uuid=new_conversation.uuid,
+      announce_scope=False,
+      force_cache_bypass=self.show_all_projects,
+    )
 
-        self._collapse_expanded_row()
-        self._update_node_label(node, expanded=True)
-        self._expanded_node_uuid = current_uuid
+  def _copy_path_to_clipboard(self, value: str) -> bool:
+    driver = getattr(self, '_driver', None)
+    if driver is None:
+      return False
 
-    @staticmethod
-    def _pad_column(value: str, width: int, *, align: str = "left") -> str:
-        if width <= 0:
-            return value
+    try:
+      import base64
 
-        content = value or ""
-        if len(content) <= width:
-            if align == "right":
-                return content.rjust(width)
-            return content.ljust(width)
+      payload = base64.b64encode(value.encode('utf-8')).decode('utf-8')
+      driver.write(f'\x1b]52;c;{payload}\a')
+    except Exception:
+      return False
 
-        if width <= 3:
-            return content[:width]
+    return True
 
-        truncated = f"{content[: width - 3]}..."
-        if align == "right":
-            return truncated.rjust(width)
-        return truncated
+  def action_yank_conversation(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    node = tree.cursor_node
+    if not node or not isinstance(node.data, ConversationNodeData):
+      self.show_status('Select a conversation to yank')
+      return
 
-    def _update_column_headers(self) -> None:
-        try:
-            tree_header = self.query_one("#tree_header", Static)
-            tree_header.update(self._render_tree_header())
-        except NoMatches:
-            pass
+    conversation = node.data.conversation
+    resolved_path = conversation.path.resolve()
 
-        try:
-            metadata_header = self.query_one("#metadata_header", Static)
-            metadata_header.update(self._render_metadata_header())
-        except NoMatches:
-            pass
+    if not self._copy_path_to_clipboard(str(resolved_path)):
+      self.show_status('Clipboard unavailable')
+      return
 
-    def _render_tree_header(self) -> Text:
-        header_text = self._pad_column(_TREE_HEADER, _TREE_COLUMN_WIDTH)
-        header = Text(f"{_HEADER_PREFIX}{header_text}")
-        header.stylize("bold")
-        return header
+    self.show_status(f'Copied conversation path to clipboard: {resolved_path}')
 
-    def _render_metadata_header(self) -> Text:
-        metadata_values = {key: label for key, _, label in self._column_layout()}
-        metadata_text = self._format_columns(
-            metadata_values, "", prefix="", wrap=False, align="right"
-        )
-        metadata_text.stylize("bold")
-        return metadata_text
+  def action_open_conversation(self) -> None:
+    tree = self.query_one('#conversation_tree', Tree)
+    node = tree.cursor_node
+    if not node or not isinstance(node.data, ConversationNodeData):
+      self.show_status('Select a conversation to open')
+      return
 
-    def _metadata_components(self) -> Optional[Tuple[MetadataLines, Tree]]:
-        try:
-            metadata = self.query_one("#metadata_lines", MetadataLines)
-            tree = self.query_one("#conversation_tree", Tree)
-        except NoMatches:
-            return None
-        return metadata, tree
+    conversation = node.data.conversation
+    executable = shutil.which('claude')
+    if not executable:
+      self.show_status('claude CLI not found on PATH')
+      return
 
-    def _refresh_metadata_lines(self) -> None:
-        components = self._metadata_components()
-        if not components:
-            return
-        metadata, tree = components
-        metadata.refresh_from_tree()
-        metadata.highlight_node(tree.cursor_node)
+    command = ExternalCommand(
+      executable=executable, args=['claude', '--resume', conversation.uuid]
+    )
+    self.exit(command)
 
-    def _highlight_metadata_node(self, node: Optional[TreeNode]) -> None:
-        components = self._metadata_components()
-        if not components:
-            return
-        metadata, tree = components
-        metadata.highlight_node(node if node is not None else tree.cursor_node)
+  def action_refresh_tree(self) -> None:
+    self.show_status('Refreshing conversations...')
+    self._prime_all_projects_cache(force=True)
+    self.load_conversations(
+      focus_uuid=self._selected_uuid, force_cache_bypass=self.show_all_projects
+    )
 
-    def _sync_metadata_scroll(self) -> None:
-        components = self._metadata_components()
-        if not components:
-            return
-        metadata, tree = components
-        metadata.sync_scroll(tree.scroll_y)
+  def action_toggle_scope(self) -> None:
+    self.show_all_projects = not self.show_all_projects
+    scope = 'all projects' if self.show_all_projects else 'current project'
+    self.show_status(f'Switched to {scope}')
+    self.load_conversations(focus_uuid=self._selected_uuid)
 
-    def _handle_tree_scroll(self, old_value: float, new_value: float) -> None:
-        self._sync_metadata_scroll()
+  def action_toggle_preview(self) -> None:
+    self.preview_visible = not self.preview_visible
+    self._apply_preview_visibility()
+    if self.preview_visible:
+      tree = self.query_one('#conversation_tree', Tree)
+      self._set_selected_from_node(tree.cursor_node)
+    state = 'shown' if self.preview_visible else 'hidden'
+    self.show_status(f'Preview {state}')
 
-    def _column_layout(self) -> List[tuple[str, int, str]]:
-        layout: List[tuple[str, int, str]] = list(_BASE_COLUMN_LAYOUT)
-        if self.show_all_projects:
-            layout.append(_ALL_SCOPE_COLUMN)
-        return layout
+  def action_show_help(self) -> None:
+    help_lines = [
+      'Navigation:',
+      '  j/k or arrows  Move selection',
+      '  h/l            Collapse/expand',
+      '  Tab           Toggle whole branch',
+      '  g / G          Jump to top/bottom',
+      '',
+      'Actions:',
+      '  B              Branch selected conversation',
+      '  Y              Copy conversation path to clipboard',
+      '  O              Open in claude CLI',
+      '  r              Refresh conversations',
+      '  p              Toggle preview pane',
+      '  s              Toggle project scope',
+      '  q              Quit',
+    ]
+    self.notify('\n'.join(help_lines))
+
+  def action_quit(self) -> None:
+    self.exit()
+
+  def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+    self._set_selected_from_node(event.node)
+
+  def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+    self._set_selected_from_node(event.node)
+
+  def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
+    self._refresh_metadata_lines()
+    self._sync_metadata_scroll()
+
+  def on_tree_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
+    self._refresh_metadata_lines()
+    self._sync_metadata_scroll()
+
+  def show_status(self, message: str, duration: float = 3.0) -> None:
+    status_line = self.query_one('#status_line', Static)
+    status_line.update(message)
+    if self._status_timer:
+      self._status_timer.stop()
+    self._status_timer = self.set_timer(duration, self._clear_status)
+
+  def _clear_status(self) -> None:
+    try:
+      status_line = self.query_one('#status_line', Static)
+    except NoMatches:
+      return
+    status_line.update('')
+    if self._status_timer:
+      self._status_timer.stop()
+      self._status_timer = None
+
+  def _apply_preview_visibility(self) -> None:
+    try:
+      preview = self.query_one('#preview_pane', Static)
+    except NoMatches:
+      return
+    preview.display = self.preview_visible
+
+  def _clear_preview(self) -> None:
+    try:
+      preview = self.query_one('#preview_pane', Static)
+    except NoMatches:
+      return
+    placeholder = Panel(
+      Text('Select a conversation to view details'),
+      title='Conversation Preview',
+      border_style='cyan',
+    )
+    preview.update(placeholder)
+
+  def _update_preview_content(self, data: ConversationNodeData) -> None:
+    try:
+      preview = self.query_one('#preview_pane', Static)
+    except NoMatches:
+      return
+    preview.update(self._build_preview_renderable(data))
+
+  def _build_preview_renderable(self, data: ConversationNodeData) -> Panel:
+    conversation = data.conversation
+
+    metadata = Table.grid(padding=(0, 1))
+    metadata.add_column(style='bold cyan', justify='right', no_wrap=True)
+    metadata.add_column()
+
+    metadata.add_row('UUID', conversation.uuid)
+    metadata.add_row('Project', self._format_project_path(conversation.project_path))
+    metadata.add_row('File', str(conversation.path))
+    metadata.add_row(
+      'Last Modified', self._format_timestamp(conversation.last_modified)
+    )
+    created_display = (
+      self._format_timestamp(data.created_at) if data.created_at else '--'
+    )
+    metadata.add_row('Created', created_display)
+    metadata.add_row('Messages', str(data.message_count))
+    metadata.add_row('Branches', str(data.child_count))
+    metadata.add_row('Git Branch', data.git_branch or '-')
+
+    segments: List[Text] = [metadata]
+
+    summary_source = (data.summary or '').strip()
+    if summary_source:
+      segments.extend(
+        [
+          Text(),
+          Text('[ Assistant summary ]', style='bold'),
+          Text(self._truncate_preview_text(summary_source)),
+        ]
+      )
+
+    preview_source = (data.preview or '').strip()
+    if preview_source:
+      segments.extend(
+        [
+          Text(),
+          Text('[ First user prompt ]', style='bold'),
+          Text(self._truncate_preview_text(preview_source)),
+        ]
+      )
+
+    if len(segments) == 1:
+      segments.extend([Text(), Text('No preview details available', style='bold')])
+
+    content = Group(*segments)
+
+    return Panel(content, title='Conversation Preview', border_style='cyan')
+
+  def _prime_all_projects_cache(self, *, force: bool = False) -> None:
+    worker = self._all_projects_worker
+    if worker and worker.is_running and not force:
+      return
+    self._all_projects_worker = self.run_worker(
+      self._load_all_projects_payload,
+      name='all-projects-cache',
+      group='all-projects-cache',
+      exclusive=True,
+      exit_on_error=False,
+      thread=True,
+    )
+
+  def _load_all_projects_payload(self) -> AllProjectsCache:
+    conversations = self.conversation_manager.find_all_conversations(all_projects=True)
+    display_data = self._build_display_data(conversations)
+    return AllProjectsCache(conversations=conversations, display_data=display_data)
+
+  def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+    worker = event.worker
+    if worker is not self._all_projects_worker:
+      return
+
+    if event.state == WorkerState.SUCCESS:
+      result = cast(Optional[AllProjectsCache], worker.result)
+      if result is None:
+        return
+      self._all_projects_cache = result
+      if self.show_all_projects:
+        self.load_conversations(focus_uuid=self._selected_uuid, announce_scope=False)
+    elif event.state == WorkerState.ERROR:
+      self.show_status('Unable to preload all projects')
+
+  def _focus_on_uuid(self, tree: Tree, uuid: str) -> None:
+    node = self._node_lookup.get(uuid)
+    if node:
+      self._expand_node_path(node)
+      tree.select_node(node)
+      self._set_selected_from_node(node)
+      tree.scroll_to_node(node, animate=False)
+    else:
+      self._focus_first_child(tree)
+
+  def _focus_first_child(self, tree: Tree) -> None:
+    if tree.root.children:
+      first_child = tree.root.children[0]
+      tree.select_node(first_child)
+      self._set_selected_from_node(first_child)
+      tree.scroll_to_node(first_child, animate=False)
+
+  def _set_selected_from_node(self, node: Optional[TreeNode]) -> None:
+    if node and isinstance(node.data, ConversationNodeData):
+      self._apply_row_expansion(node)
+      self._selected_uuid = node.data.conversation.uuid
+      self._update_preview_content(node.data)
+    else:
+      self._collapse_expanded_row()
+      self._selected_uuid = None
+      self._clear_preview()
+
+    self._highlight_metadata_node(node)
+    self._sync_metadata_scroll()
+
+  def _expand_node_path(self, node: TreeNode) -> None:
+    path: List[TreeNode] = []
+    current: Optional[TreeNode] = node
+
+    while current is not None:
+      path.append(current)
+      current = current.parent
+
+    for ancestor in reversed(path):
+      ancestor.expand()
+
+  def _branch_is_expanded(self, node: TreeNode) -> bool:
+    if not node.is_expanded:
+      return False
+    return any(child.is_expanded for child in node.children) or bool(node.children)
+
+  def _expand_branch(self, node: TreeNode) -> None:
+    stack: List[TreeNode] = [node]
+    while stack:
+      current = stack.pop()
+      current.expand()
+      stack.extend(reversed(current.children))
+
+  def _collapse_branch(self, node: TreeNode) -> None:
+    stack: List[TreeNode] = [node]
+    while stack:
+      current = stack.pop()
+      stack.extend(current.children)
+      current.collapse()
+
+  def _build_display_data(
+    self, conversations: List[ConversationFile]
+  ) -> Dict[str, ConversationDisplayData]:
+    display_data: Dict[str, ConversationDisplayData] = {}
+    for conversation in conversations:
+      display_data[conversation.uuid] = self._extract_display_data(conversation)
+    return display_data
+
+  def _extract_display_data(
+    self, conversation: ConversationFile
+  ) -> ConversationDisplayData:
+    metadata: ConversationMetadata = extract_conversation_metadata(conversation)
+
+    return ConversationDisplayData(
+      preview=metadata.preview,
+      summary=metadata.summary,
+      created_at=metadata.created_at,
+      message_count=metadata.message_count,
+      git_branch=metadata.git_branch,
+    )
+
+  @staticmethod
+  def _format_timestamp(value: datetime) -> str:
+    if value.tzinfo is not None:
+      try:
+        localized = value.astimezone()
+      except ValueError:
+        localized = value
+    else:
+      localized = value
+    return localized.strftime('%m-%d %H:%M')
+
+  @staticmethod
+  def _format_branch(branch: Optional[str]) -> str:
+    if not branch:
+      return '-'
+    trimmed = branch.strip()
+    if not trimmed:
+      return '-'
+    if len(trimmed) <= 32:
+      return trimmed
+    return f'{trimmed[:29]}...'
+
+  @staticmethod
+  def _format_project_path(project_path: Optional[str]) -> str:
+    if not project_path:
+      return ''
+    path_str = str(project_path)
+    home = str(Path.home())
+    if path_str == home:
+      return '~'
+    home_prefix = f'{home}/'
+    if path_str.startswith(home_prefix):
+      return f'~/{path_str[len(home_prefix):]}'
+    return path_str
+
+  @staticmethod
+  def _format_preview(preview: str) -> str:
+    return BushwackApp._format_snippet(preview, '[no user message]')
+
+  @staticmethod
+  def _format_summary(summary: str) -> str:
+    return BushwackApp._format_snippet(summary, '[no summary]')
+
+  def _build_description_texts(self, *, summary: str, preview: str) -> Tuple[str, str]:
+    summary_clean = summary.strip()
+    if summary_clean:
+      summary_collapsed = self._format_summary(summary_clean)
+      return summary_collapsed, summary_clean
+
+    preview_clean = preview.strip()
+    if preview_clean:
+      preview_collapsed = self._format_preview(preview_clean)
+      return preview_collapsed, preview_clean
+
+    placeholder = '[no summary]'
+    return placeholder, placeholder
+
+  @staticmethod
+  def _format_snippet(value: str, placeholder: str) -> str:
+    if not value:
+      return placeholder
+
+    compressed = ' '.join(value.split())
+    if len(compressed) <= _PREVIEW_LIMIT:
+      return compressed
+    return f'{compressed[: _PREVIEW_LIMIT - 3]}...'
+
+  @staticmethod
+  def _truncate_preview_text(value: str, limit: int = _PREVIEW_PANE_LIMIT) -> str:
+    if len(value) <= limit:
+      return value
+    return f'{value[: limit - 3]}...'
+
+  def _render_label_for_node(
+    self, data: ConversationNodeData, *, expanded: bool
+  ) -> Text:
+    tree_lines = self._build_tree_lines(data, expanded=expanded)
+    lines = tree_lines or [self._pad_column('', _TREE_COLUMN_WIDTH)]
+    label = Text('\n'.join(lines))
+    label.no_wrap = not expanded
+    return label
+
+  def _build_tree_lines(
+    self, data: ConversationNodeData, *, expanded: bool
+  ) -> List[str]:
+    uuid_value = data.column_values.get(_TREE_COLUMN_KEY, '')
+    description = (
+      data.full_description if expanded else data.collapsed_description
+    ) or '[no summary]'
+
+    base_text = f'{uuid_value}  {description}'.strip()
+    if not base_text:
+      base_text = uuid_value or '[no summary]'
+
+    if not expanded:
+      return [self._pad_column(base_text, _TREE_COLUMN_WIDTH)]
+
+    subsequent_indent = ' ' * (len(uuid_value) + 2)
+    wrapper = textwrap.TextWrapper(
+      width=_TREE_COLUMN_WIDTH,
+      replace_whitespace=False,
+      drop_whitespace=False,
+      break_long_words=True,
+      break_on_hyphens=False,
+      initial_indent='',
+      subsequent_indent=subsequent_indent,
+    )
+    wrapped = wrapper.wrap(base_text)
+    if not wrapped:
+      wrapped = ['']
+
+    return [line.ljust(_TREE_COLUMN_WIDTH) for line in wrapped]
+
+  def _format_columns(
+    self,
+    column_values: Dict[str, str],
+    trailing: str,
+    *,
+    prefix: str = '',
+    wrap: bool = False,
+    layout: Optional[List[tuple[str, int, str]]] = None,
+    align: str = 'left',
+  ) -> Text:
+    segments = []
+    column_layout = layout or self._column_layout()
+    for key, width, _ in column_layout:
+      value = column_values.get(key, '')
+      segments.append(self._pad_column(value, width, align=align))
+
+    line = f'{prefix}{"  ".join(segments)}'
+    if trailing:
+      line = f'{line}  {trailing}' if line else trailing
+
+    text = Text(line)
+    text.stylize(Style(color='white'))
+    text.no_wrap = not wrap
+    return text
+
+  def _update_node_label(self, node: TreeNode, *, expanded: bool) -> None:
+    if not isinstance(node.data, ConversationNodeData):
+      return
+
+    data = node.data
+    node.label = self._render_label_for_node(data, expanded=expanded)
+
+  def _collapse_expanded_row(self) -> None:
+    if not self._expanded_node_uuid:
+      return
+
+    node = self._node_lookup.get(self._expanded_node_uuid)
+    if node:
+      self._update_node_label(node, expanded=False)
+    self._expanded_node_uuid = None
+
+  def _apply_row_expansion(self, node: TreeNode) -> None:
+    if not isinstance(node.data, ConversationNodeData):
+      return
+
+    current_uuid = node.data.conversation.uuid
+    if self._expanded_node_uuid == current_uuid:
+      self._update_node_label(node, expanded=True)
+      return
+
+    self._collapse_expanded_row()
+    self._update_node_label(node, expanded=True)
+    self._expanded_node_uuid = current_uuid
+
+  @staticmethod
+  def _pad_column(value: str, width: int, *, align: str = 'left') -> str:
+    if width <= 0:
+      return value
+
+    content = value or ''
+    if len(content) <= width:
+      if align == 'right':
+        return content.rjust(width)
+      return content.ljust(width)
+
+    if width <= 3:
+      return content[:width]
+
+    truncated = f'{content[: width - 3]}...'
+    if align == 'right':
+      return truncated.rjust(width)
+    return truncated
+
+  def _update_column_headers(self) -> None:
+    try:
+      tree_header = self.query_one('#tree_header', Static)
+      tree_header.update(self._render_tree_header())
+    except NoMatches:
+      pass
+
+    try:
+      metadata_header = self.query_one('#metadata_header', Static)
+      metadata_header.update(self._render_metadata_header())
+    except NoMatches:
+      pass
+
+  def _render_tree_header(self) -> Text:
+    header_text = self._pad_column(_TREE_HEADER, _TREE_COLUMN_WIDTH)
+    header = Text(f'{_HEADER_PREFIX}{header_text}')
+    header.stylize('bold')
+    return header
+
+  def _render_metadata_header(self) -> Text:
+    metadata_values = {key: label for key, _, label in self._column_layout()}
+    metadata_text = self._format_columns(
+      metadata_values, '', prefix='', wrap=False, align='right'
+    )
+    metadata_text.stylize('bold')
+    return metadata_text
+
+  def _metadata_components(self) -> Optional[Tuple[MetadataLines, Tree]]:
+    try:
+      metadata = self.query_one('#metadata_lines', MetadataLines)
+      tree = self.query_one('#conversation_tree', Tree)
+    except NoMatches:
+      return None
+    return metadata, tree
+
+  def _refresh_metadata_lines(self) -> None:
+    components = self._metadata_components()
+    if not components:
+      return
+    metadata, tree = components
+    metadata.refresh_from_tree()
+    metadata.highlight_node(tree.cursor_node)
+
+  def _highlight_metadata_node(self, node: Optional[TreeNode]) -> None:
+    components = self._metadata_components()
+    if not components:
+      return
+    metadata, tree = components
+    metadata.highlight_node(node if node is not None else tree.cursor_node)
+
+  def _sync_metadata_scroll(self) -> None:
+    components = self._metadata_components()
+    if not components:
+      return
+    metadata, tree = components
+    metadata.sync_scroll(tree.scroll_y)
+
+  def _handle_tree_scroll(self, old_value: float, new_value: float) -> None:
+    self._sync_metadata_scroll()
+
+  def _column_layout(self) -> List[tuple[str, int, str]]:
+    layout: List[tuple[str, int, str]] = list(_BASE_COLUMN_LAYOUT)
+    if self.show_all_projects:
+      layout.append(_ALL_SCOPE_COLUMN)
+    return layout
 
 
-if __name__ == "__main__":
-    app = BushwackApp()
-    app.run()
+if __name__ == '__main__':
+  app = BushwackApp()
+  app.run()
