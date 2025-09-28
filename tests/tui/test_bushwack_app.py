@@ -11,6 +11,7 @@ from typing import List, Optional
 
 import pytest
 
+from claude_bushwack.conversation_metadata import ConversationMetadata
 from claude_bushwack.core import ClaudeConversationManager, ConversationFile
 from claude_bushwack.exceptions import ConversationNotFoundError
 from rich.text import Text
@@ -906,17 +907,6 @@ def test_formatting_helpers(bushwack_app: BushwackApp):
   assert bushwack_app._format_snippet('', '[placeholder]') == '[placeholder]'
 
 
-def test_coerce_text_variants(bushwack_app: BushwackApp):
-  message = {
-    'content': [{'type': 'text', 'text': 'hello'}, {'type': 'text', 'text': 'world'}]
-  }
-  assert bushwack_app._coerce_text(message) == 'hello world'
-  message = {'text': [{'text': 'foo'}, 'bar']}
-  assert bushwack_app._coerce_text(message) == 'foo bar'
-  message = {'body': 'fallback'}
-  assert bushwack_app._coerce_text(message) == 'fallback'
-
-
 def test_extract_display_data_from_sample(
   bushwack_app: BushwackApp, sample_conversation: Path
 ):
@@ -930,6 +920,43 @@ def test_extract_display_data_from_sample(
   data = bushwack_app._extract_display_data(conversation)
   assert data.message_count > 0
   assert isinstance(data.preview, str)
+
+
+def test_extract_display_data_delegates_to_core_helper(
+  bushwack_app: BushwackApp, monkeypatch: pytest.MonkeyPatch
+):
+  conversation = ConversationFile(
+    path=Path('dummy.jsonl'),
+    uuid='1234',
+    project_dir='proj',
+    project_path='/tmp/proj',
+    last_modified=datetime.now(tz=timezone.utc),
+  )
+
+  expected_metadata = ConversationMetadata(
+    preview='Core preview',
+    summary='Core summary',
+    created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    message_count=5,
+    git_branch='feature/core',
+  )
+
+  captured = {}
+
+  def fake_extract(source):
+    captured['source'] = source
+    return expected_metadata
+
+  monkeypatch.setattr('claude_bushwack.tui.extract_conversation_metadata', fake_extract)
+
+  result = bushwack_app._extract_display_data(conversation)
+
+  assert captured['source'] is conversation
+  assert result.preview == expected_metadata.preview
+  assert result.summary == expected_metadata.summary
+  assert result.created_at == expected_metadata.created_at
+  assert result.message_count == expected_metadata.message_count
+  assert result.git_branch == expected_metadata.git_branch
 
 
 def test_expand_and_collapse_branch(
