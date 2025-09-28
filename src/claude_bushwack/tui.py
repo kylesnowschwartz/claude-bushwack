@@ -213,7 +213,7 @@ class MetadataLines(ScrollView):
       strip = self._render_line_for_node(node, highlight)
       self._line_cache[cache_key] = strip
 
-    return strip.crop_extend(scroll_x, scroll_x + width, base_style)
+    return strip.crop_extend(scroll_x, scroll_x + width, None)
 
   def _render_line_for_node(self, node: TreeNode, highlight: bool) -> Strip:
     text = self._build_row_text(node, highlight)
