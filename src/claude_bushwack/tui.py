@@ -1467,6 +1467,7 @@ class BushwackApp(App):
             line = f"{line}  {trailing}" if line else trailing
 
         text = Text(line)
+        text.stylize(Style(color="white"))
         text.no_wrap = not wrap
         return text
 
