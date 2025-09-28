@@ -10,11 +10,15 @@ from pathlib import Path
 from typing import List, Optional
 
 import pytest
-
-from claude_bushwack.core import ClaudeConversationManager, ConversationFile
-from claude_bushwack.exceptions import ConversationNotFoundError
 from rich.text import Text
 
+from claude_bushwack.core import (
+  ClaudeConversationManager,
+  ConversationFile,
+  _coerce_text,
+  extract_conversation_metadata,
+)
+from claude_bushwack.exceptions import ConversationNotFoundError
 from claude_bushwack.tui import (
   BushwackApp,
   ConversationNodeData,
@@ -910,14 +914,14 @@ def test_coerce_text_variants(bushwack_app: BushwackApp):
   message = {
     'content': [{'type': 'text', 'text': 'hello'}, {'type': 'text', 'text': 'world'}]
   }
-  assert bushwack_app._coerce_text(message) == 'hello world'
+  assert _coerce_text(message) == 'hello world'
   message = {'text': [{'text': 'foo'}, 'bar']}
-  assert bushwack_app._coerce_text(message) == 'foo bar'
+  assert _coerce_text(message) == 'foo bar'
   message = {'body': 'fallback'}
-  assert bushwack_app._coerce_text(message) == 'fallback'
+  assert _coerce_text(message) == 'fallback'
 
 
-def test_extract_display_data_from_sample(
+def test_extract_conversation_metadata_from_sample(
   bushwack_app: BushwackApp, sample_conversation: Path
 ):
   conversation = ConversationFile(
@@ -927,9 +931,9 @@ def test_extract_display_data_from_sample(
     project_path='/Users/kyle/Code/my-projects/claude-bushwack',
     last_modified=datetime.now(tz=timezone.utc),
   )
-  data = bushwack_app._extract_display_data(conversation)
-  assert data.message_count > 0
-  assert isinstance(data.preview, str)
+  metadata = extract_conversation_metadata(conversation)
+  assert metadata.message_count > 0
+  assert isinstance(metadata.preview, str)
 
 
 def test_expand_and_collapse_branch(

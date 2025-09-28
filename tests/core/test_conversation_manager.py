@@ -13,8 +13,10 @@ from claude_bushwack.core import (
   AmbiguousSessionIDError,
   BranchingError,
   ClaudeConversationManager,
+  ConversationMetadata,
   ConversationNotFoundError,
   InvalidUUIDError,
+  extract_conversation_metadata,
 )
 
 
@@ -334,3 +336,172 @@ def test_get_conversation_ancestry_handles_cycles(
   conversation_factory(cyclic_uuid, parent_uuid=cyclic_uuid, summary=None)
   ancestry = populated_manager.get_conversation_ancestry(cyclic_uuid)
   assert [item.uuid for item in ancestry] == [cyclic_uuid]
+
+
+def test_extract_conversation_metadata_basic(
+  manager: ClaudeConversationManager, conversation_factory
+) -> None:
+  """extract_conversation_metadata parses basic conversation data."""
+  test_uuid = 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb'
+  conversation_factory(
+    test_uuid,
+    parent_uuid=None,
+    summary='Test conversation summary',
+    git_branch='main',
+    extra_lines=[],
+  )
+
+  conversation = manager.find_conversation(test_uuid)
+  metadata = extract_conversation_metadata(conversation)
+
+  assert isinstance(metadata, ConversationMetadata)
+  assert metadata.summary == 'Test conversation summary'
+  assert metadata.git_branch == 'main'
+  assert metadata.message_count > 0  # Should have at least one message
+  assert metadata.created_at is not None
+  assert metadata.preview.strip()  # Should have some preview text
+
+
+def test_extract_conversation_metadata_empty_file(
+  manager: ClaudeConversationManager, tmp_path: Path
+) -> None:
+  """extract_conversation_metadata handles empty or invalid files gracefully."""
+  from datetime import datetime
+
+  from claude_bushwack.core import ConversationFile
+
+  # Create an empty file
+  empty_file = tmp_path / 'empty.jsonl'
+  empty_file.touch()
+
+  conversation = ConversationFile(
+    path=empty_file,
+    uuid='empty-file',
+    project_dir='test',
+    project_path=str(tmp_path),
+    last_modified=datetime.now(),
+    parent_uuid=None,
+  )
+
+  metadata = extract_conversation_metadata(conversation)
+
+  assert metadata.summary == ''
+  assert metadata.preview == ''
+  assert metadata.created_at is None
+  assert metadata.message_count == 0
+  assert metadata.git_branch is None
+
+
+def test_extract_conversation_metadata_missing_file(tmp_path: Path) -> None:
+  """extract_conversation_metadata handles missing files gracefully."""
+  from datetime import datetime
+
+  from claude_bushwack.core import ConversationFile
+
+  # Reference a non-existent file
+  missing_file = tmp_path / 'missing.jsonl'
+
+  conversation = ConversationFile(
+    path=missing_file,
+    uuid='missing-file',
+    project_dir='test',
+    project_path=str(tmp_path),
+    last_modified=datetime.now(),
+    parent_uuid=None,
+  )
+
+  metadata = extract_conversation_metadata(conversation)
+
+  # Should return empty metadata when file doesn't exist
+  assert metadata.summary == ''
+  assert metadata.preview == ''
+  assert metadata.created_at is None
+  assert metadata.message_count == 0
+  assert metadata.git_branch is None
+
+
+def test_extract_conversation_metadata_complex_content(
+  manager: ClaudeConversationManager, conversation_factory, tmp_path: Path
+) -> None:
+  """extract_conversation_metadata handles complex message structures."""
+  from datetime import datetime
+
+  test_uuid = 'cccccccc-1111-2222-3333-000000000000'
+
+  # Import ConversationLine from conftest
+  import sys
+  from pathlib import Path
+
+  # Add tests directory to path to import conftest
+  tests_dir = Path(__file__).parent.parent
+  sys.path.append(str(tests_dir))
+  from conftest import ConversationLine
+
+  # Create complex message structures using ConversationLine
+  complex_message = ConversationLine(
+    type='user',
+    content={
+      'timestamp': '2024-01-15T10:30:00Z',
+      'role': 'user',
+      'message': {
+        'role': 'user',
+        'content': [
+          {
+            'type': 'text',
+            'text': 'This is a complex message with structured content.',
+          },
+          {'type': 'text', 'text': ' It has multiple parts.'},
+        ],
+      },
+      'gitBranch': 'feature/test-branch',
+    },
+  )
+
+  session_hook_message = ConversationLine(
+    type='user',
+    content={
+      'timestamp': '2024-01-15T10:31:00Z',
+      'role': 'user',
+      'message': {
+        'role': 'user',
+        'content': '<session-start-hook>This should be ignored</session-start-hook>',
+      },
+    },
+  )
+
+  regular_message = ConversationLine(
+    type='assistant',
+    content={
+      'timestamp': '2024-01-15T10:32:00Z',
+      'role': 'assistant',
+      'message': {'role': 'assistant', 'content': 'Assistant response'},
+    },
+  )
+
+  conversation_factory(
+    test_uuid,
+    parent_uuid=None,
+    summary='Complex content test',
+    preview_text='This is a complex message with structured content. It has multiple parts.',
+    created_at=datetime(2024, 1, 15, 10, 30, 0).replace(
+      tzinfo=datetime.now().astimezone().tzinfo
+    ),
+    git_branch='feature/test-branch',
+    extra_lines=[complex_message, session_hook_message, regular_message],
+  )
+
+  conversation = manager.find_conversation(test_uuid)
+  metadata = extract_conversation_metadata(conversation)
+
+  assert metadata.summary == 'Complex content test'
+  assert metadata.git_branch == 'feature/test-branch'
+  assert metadata.message_count >= 3  # Should count the messages we added
+  assert (
+    'This is a complex message with structured content. It has multiple parts.'
+    in metadata.preview
+  )
+  # Session hooks should be ignored in preview
+  assert 'session-start-hook' not in metadata.preview
+  assert metadata.created_at == datetime(2024, 1, 15, 10, 30, 0).replace(
+    tzinfo=datetime.now().astimezone().tzinfo
+  )
