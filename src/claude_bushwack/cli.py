@@ -39,7 +39,7 @@ def _format_summary(metadata: ConversationMetadata) -> str:
   preview = (metadata.preview or '').strip()
   if preview:
     return preview
-  return '[no summary]'
+  return 'no summary'
 
 
 @click.group(context_settings={'help_option_names': ['-h', '--help']})

@@ -27,7 +27,7 @@ make dev             # Install with dev dependencies
 
 # Testing and Quality
 make test            # Run pytest test suite
-pytest tests/test_cli.py::test_branch_command  # Run single test
+poetry run pytest tests/test_cli.py::test_list_command_default_scope # run single test
 make lint            # Check code quality (ruff + black)
 make format          # Auto-format code
 make clean           # Remove Python cache files
