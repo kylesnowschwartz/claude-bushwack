@@ -1,6 +1,7 @@
 """CLI interface for claude-bushwack."""
 
 import os
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -8,6 +9,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
+from .conversation_metadata import ConversationMetadata, extract_conversation_metadata
 from .core import ClaudeConversationManager
 from .exceptions import (
   AmbiguousSessionIDError,
@@ -17,6 +19,27 @@ from .exceptions import (
 )
 
 console = Console()
+
+
+def _format_created(value: datetime) -> str:
+  if value.tzinfo is not None:
+    try:
+      localized = value.astimezone()
+    except ValueError:
+      localized = value
+  else:
+    localized = value
+  return localized.strftime('%Y-%m-%d %H:%M')
+
+
+def _format_summary(metadata: ConversationMetadata) -> str:
+  summary = (metadata.summary or '').strip()
+  if summary:
+    return summary
+  preview = (metadata.preview or '').strip()
+  if preview:
+    return preview
+  return '[no summary]'
 
 
 @click.group(context_settings={'help_option_names': ['-h', '--help']})
@@ -67,6 +90,11 @@ def list_conversations(all_projects, project_path, tree):
       f'[green]Found {len(conversations)} conversation(s) for {scope}[/green]\n'
     )
 
+    metadata_map = {
+      conversation.uuid: extract_conversation_metadata(conversation)
+      for conversation in conversations
+    }
+
     if tree:
       # Show tree format
       roots, children_dict = manager.build_conversation_tree(conversations)
@@ -75,9 +103,19 @@ def list_conversations(all_projects, project_path, tree):
         tree_view = Tree('🌳 Conversation Tree')
 
         def add_conversation_to_tree(parent_node, conv, children):
+          metadata = metadata_map.get(conv.uuid, ConversationMetadata())
+          created_at = metadata.created_at or conv.last_modified
+          created_text = _format_created(created_at)
+          summary_text = _format_summary(metadata)
+          branch_label = ''
+          if conv.parent_uuid:
+            branch_label = f' (branch of {conv.parent_uuid[:8]}...)'
+
           # Create label with conversation info
-          parent_text = ' (parent)' if not conv.parent_uuid else ' (branch)'
-          label = f"[cyan]{conv.uuid[:8]}...[/cyan] - {conv.last_modified.strftime('%Y-%m-%d %H:%M')}{parent_text}"
+          label = (
+            f'[cyan]{conv.uuid[:8]}...[/cyan] {created_text}'
+            f'{branch_label} - {summary_text}'
+          )
 
           conv_node = parent_node.add(label)
 
@@ -103,18 +141,43 @@ def list_conversations(all_projects, project_path, tree):
           '\n[yellow]🔗 Orphaned branches (parent not in current scope):[/yellow]'
         )
         for conv in sorted(orphaned, key=lambda c: c.last_modified, reverse=True):
+          metadata = metadata_map.get(conv.uuid, ConversationMetadata())
+          created_at = metadata.created_at or conv.last_modified
+          created_text = _format_created(created_at)
+          summary_text = _format_summary(metadata)
           console.print(
-            f"  [dim]└─[/dim] [cyan]{conv.uuid[:8]}...[/cyan] - parent: [dim]{conv.parent_uuid[:8]}...[/dim] - {conv.last_modified.strftime('%Y-%m-%d %H:%M')}"
+            f'  [dim]└─[/dim] [cyan]{conv.uuid[:8]}...[/cyan] - parent: '
+            f'[dim]{conv.parent_uuid[:8]}...[/dim] - {created_text} - {summary_text}'
           )
     else:
       # Show flat format
+      table = Table(show_header=True, header_style='bold blue')
+      table.add_column('UUID', style='cyan')
+      table.add_column('Project', style='green')
+      table.add_column('Created', style='yellow')
+      table.add_column('Messages', justify='right')
+      table.add_column('Branch', style='magenta')
+      table.add_column('Summary', overflow='fold')
+      table.add_column('Parent', style='dim')
+
       for conv in conversations:
-        parent_info = (
-          f' (branch of {conv.parent_uuid[:8]}...)' if conv.parent_uuid else ''
+        metadata = metadata_map.get(conv.uuid, ConversationMetadata())
+        created_at = metadata.created_at or conv.last_modified
+        created_text = _format_created(created_at)
+        summary_text = _format_summary(metadata)
+        branch_text = (metadata.git_branch or '').strip() or '-'
+        parent_text = f'{conv.parent_uuid[:8]}...' if conv.parent_uuid else '-'
+        table.add_row(
+          conv.uuid,
+          conv.project_dir,
+          created_text,
+          str(metadata.message_count),
+          branch_text,
+          summary_text,
+          parent_text,
         )
-        console.print(
-          f'[cyan]{conv.uuid}[/cyan] - {conv.project_dir} - {conv.last_modified.strftime("%Y-%m-%d %H:%M")}{parent_info}'
-        )
+
+      console.print(table)
 
   except Exception as e:
     console.print(f'[red]Error listing conversations: {e}[/red]')

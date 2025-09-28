@@ -14,6 +14,7 @@ import pytest
 from click.testing import CliRunner
 
 from claude_bushwack.cli import main
+from claude_bushwack.conversation_metadata import ConversationMetadata
 from claude_bushwack.core import ClaudeConversationManager, ConversationFile
 from claude_bushwack.exceptions import (
   AmbiguousSessionIDError,
@@ -90,10 +91,23 @@ def test_list_command_default_scope(
   convo = _conversation('11111111-1111-1111-1111-111111111111')
   manager = _RecordingManager([convo])
   monkeypatch.setattr('claude_bushwack.cli.ClaudeConversationManager', lambda: manager)
+  monkeypatch.setattr(
+    'claude_bushwack.cli.extract_conversation_metadata',
+    lambda conv: ConversationMetadata(
+      summary='Root summary',
+      preview='Root preview',
+      created_at=datetime(2024, 1, 1, 12, 0, 0),
+      message_count=4,
+      git_branch='feature/root',
+    ),
+  )
   result = runner.invoke(main, ['list'])
   assert result.exit_code == 0
   assert 'Found 1 conversation(s) for current project' in result.output
-  assert convo.uuid in result.output
+  assert convo.uuid[:8] in result.output
+  assert 'Root      │' in result.output
+  assert '│ summary   │' in result.output
+  assert 'feature' in result.output
   assert manager.calls[0][0] == 'find_all_conversations'
 
 
@@ -102,11 +116,39 @@ def test_list_command_tree(monkeypatch: pytest.MonkeyPatch, runner: CliRunner) -
   child = _conversation('22222222-2222-2222-2222-222222222222', parent_uuid=root.uuid)
   manager = _RecordingManager([root, child])
   monkeypatch.setattr('claude_bushwack.cli.ClaudeConversationManager', lambda: manager)
+  metadata_by_uuid = {
+    root.uuid: ConversationMetadata(
+      summary='Root conversation summary',
+      preview='',
+      created_at=datetime(2024, 1, 2, 10, 0, 0),
+      message_count=3,
+      git_branch='main',
+    ),
+    child.uuid: ConversationMetadata(
+      summary='',
+      preview='Child preview text',
+      created_at=datetime(2024, 1, 2, 11, 0, 0),
+      message_count=2,
+      git_branch='feature/child',
+    ),
+  }
+  calls: list[str] = []
+
+  def _fake_extract(conversation):
+    calls.append(conversation.uuid)
+    return metadata_by_uuid[conversation.uuid]
+
+  monkeypatch.setattr(
+    'claude_bushwack.cli.extract_conversation_metadata', _fake_extract
+  )
   result = runner.invoke(main, ['list', '--tree'])
   assert result.exit_code == 0
   assert '🌳 Conversation Tree' in result.output
   assert root.uuid[:8] in result.output
   assert child.uuid[:8] in result.output
+  assert 'Root conversation summary' in result.output
+  assert 'Child preview' in result.output
+  assert set(calls) == {root.uuid, child.uuid}
 
 
 def test_branch_command_success(
