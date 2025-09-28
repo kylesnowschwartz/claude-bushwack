@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, cast
+from typing import Callable, Dict, List, Optional, Tuple, cast
 
 from rich.console import Group
 from rich.panel import Panel
@@ -18,13 +18,16 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.events import Key
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal
+from textual.geometry import Size
+from textual.scroll_view import ScrollView
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import DirectoryTree, Footer, Input, Static, Tree
 from textual.widgets._directory_tree import DirEntry
 from textual.widgets.tree import TreeNode
 from textual.worker import Worker, WorkerState
+from textual.strip import Strip
 
 from .core import ClaudeConversationManager, ConversationFile
 from .exceptions import (
@@ -99,6 +102,174 @@ class AllProjectsCache:
 
   def is_empty(self) -> bool:
     return not self.conversations
+
+
+class MetadataLines(ScrollView):
+  """Virtualized metadata pane aligned with the conversation tree rows.
+
+  This widget mirrors the Tree widget's private ``_tree_lines`` cache to
+  determine row order and scroll offsets. Textual changes to that internal
+  structure will require verification.
+  """
+
+  def __init__(
+    self,
+    *,
+    format_columns: Callable[..., Text],
+    column_layout: Callable[[], List[tuple[str, int, str]]],
+    highlight_style: Optional[Style] = None,
+    name: Optional[str] = None,
+    id: Optional[str] = None,
+    classes: Optional[str] = None,
+    disabled: bool = False,
+  ) -> None:
+    super().__init__(name=name, id=id, classes=classes, disabled=disabled)
+    self._tree: Optional[Tree] = None
+    self._format_columns = format_columns
+    self._column_layout = column_layout
+    self._highlight_style = highlight_style or Style(reverse=True)
+    self._highlight_line = -1
+    self._line_cache: Dict[tuple[int, bool], Strip] = {}
+    self.can_focus = False
+    self.virtual_size = Size(self._measure_width(), 0)
+
+  def attach_tree(self, tree: Tree) -> None:
+    if self._tree is tree:
+      return
+    self._tree = tree
+    self._invalidate_cache()
+    self.refresh_from_tree()
+
+  def refresh_from_tree(self) -> None:
+    tree = self._tree
+    if tree is None:
+      self.virtual_size = Size(self._measure_width(), 0)
+      self.refresh(layout=True)
+      return
+
+    self._invalidate_cache()
+    height = self._tree_line_count(tree)
+    width = self._measure_width()
+    if self._highlight_line >= height:
+      self._highlight_line = -1
+    new_virtual_size = Size(width, height)
+    if new_virtual_size != self.virtual_size:
+      self.virtual_size = new_virtual_size
+      self.refresh(layout=True)
+    else:
+      self.refresh()
+
+  def highlight_node(self, node: Optional[TreeNode]) -> None:
+    line = -1 if node is None else getattr(node, '_line', -1)
+    self.highlight_line(line)
+
+  def highlight_line(self, line: int) -> None:
+    if line == self._highlight_line:
+      return
+
+    previous = self._highlight_line
+    self._highlight_line = line
+
+    if previous != -1:
+      self._drop_line_cache(previous)
+      self.refresh_line(previous)
+    if line != -1:
+      self._drop_line_cache(line)
+      self.refresh_line(line)
+
+  def refresh_line(self, line: int) -> None:
+    """Trigger a repaint after invalidating a cached line."""
+    del line
+    self.refresh()
+
+  def sync_scroll(self, scroll_y: float) -> None:
+    self.scroll_to(y=scroll_y, animate=False)
+
+  def clear(self) -> None:
+    self._invalidate_cache()
+    self.virtual_size = Size(self._measure_width(), 0)
+    self.refresh(layout=True)
+
+  def render_line(self, y: int) -> Strip:
+    width = self.size.width
+    scroll_x = int(self.scroll_offset.x)
+    scroll_y = int(self.scroll_offset.y)
+    base_style = self.rich_style
+    tree = self._tree
+
+    if tree is None:
+      return Strip.blank(width, base_style)
+
+    tree_lines = tree._tree_lines  # Textual internal cache; see class docstring.
+    absolute_line = y + scroll_y
+    if absolute_line >= len(tree_lines):
+      return Strip.blank(width, base_style)
+
+    highlight = absolute_line == self._highlight_line
+    cache_key = (absolute_line, highlight)
+    strip = self._line_cache.get(cache_key)
+    if strip is None:
+      node = tree_lines[absolute_line].node
+      strip = self._render_line_for_node(node, highlight)
+      self._line_cache[cache_key] = strip
+
+    return strip.crop_extend(scroll_x, scroll_x + width, base_style)
+
+  def _render_line_for_node(self, node: TreeNode, highlight: bool) -> Strip:
+    text = self._build_row_text(node, highlight)
+    return Strip(text.render(self.app.console))
+
+  def _build_row_text(self, node: TreeNode, highlight: bool) -> Text:
+    layout = self._column_layout()
+    if isinstance(node.data, ConversationNodeData):
+      values = node.data.column_values
+    else:
+      values = {key: '' for key, _, _ in layout}
+
+    text = self._format_columns(
+      values, '', prefix='', wrap=False, layout=layout, align='right'
+    )
+
+    if highlight:
+      text = text.copy()
+      text.stylize(self._highlight_style)
+
+    return text
+
+  def export_rows(self) -> List[Text]:
+    tree = self._tree
+    if tree is None:
+      return []
+    rows: List[Text] = []
+    for index, line in enumerate(
+      tree._tree_lines
+    ):  # Textual internal cache; see class docstring.
+      node = line.node
+      if getattr(node, 'is_root', False):
+        continue
+      rows.append(self._build_row_text(node, index == self._highlight_line))
+    return rows
+
+  def _tree_line_count(self, tree: Tree) -> int:
+    try:
+      return len(tree._tree_lines)
+    except Exception:
+      return 0
+
+  def _measure_width(self) -> int:
+    layout = self._column_layout()
+    if not layout:
+      return 0
+    column_widths = sum(width for _, width, _ in layout)
+    separators = max(len(layout) - 1, 0) * 2
+    return column_widths + separators
+
+  def _invalidate_cache(self) -> None:
+    self._line_cache.clear()
+
+  def _drop_line_cache(self, line: int) -> None:
+    self._line_cache.pop((line, True), None)
+    self._line_cache.pop((line, False), None)
 
 
 class ProjectDirectoryTree(DirectoryTree):
@@ -398,23 +569,21 @@ class BushwackApp(App):
     conversation_tree.styles.scrollbar_size_vertical = 0
     conversation_tree.styles.scrollbar_size_horizontal = 0
 
-    metadata_pane = Static('', id='metadata_pane')
-    metadata_pane.styles.height = 'auto'
-    metadata_pane.styles.text_align = 'left'
-    metadata_pane.styles.padding = (0, 1)
-    metadata_pane.styles.background = 'transparent'
-    metadata_pane.expand = True
+    metadata_lines = MetadataLines(
+      format_columns=self._format_columns,
+      column_layout=self._column_layout,
+      id='metadata_lines',
+    )
+    metadata_lines.styles.height = '1fr'
+    metadata_lines.styles.width = '2fr'
+    metadata_lines.styles.min_width = '40'
+    metadata_lines.styles.padding = (0, 1)
+    metadata_lines.styles.background = shared_background
+    metadata_lines.styles.background_tint = 'transparent'
+    metadata_lines.styles.scrollbar_size_vertical = 0
+    metadata_lines.styles.scrollbar_size_horizontal = 0
 
-    metadata_container = VerticalScroll(metadata_pane, id='metadata_container')
-    metadata_container.styles.height = '1fr'
-    metadata_container.styles.width = '2fr'
-    metadata_container.styles.min_width = '40'
-    metadata_container.styles.background = shared_background
-    metadata_container.styles.background_tint = 'transparent'
-    metadata_container.styles.scrollbar_size_vertical = 0
-    metadata_container.styles.scrollbar_size_horizontal = 0
-
-    split_view = Horizontal(conversation_tree, metadata_container, id='split_view')
+    split_view = Horizontal(conversation_tree, metadata_lines, id='split_view')
     split_view.styles.height = '1fr'
     self.watch(conversation_tree, 'scroll_y', self._handle_tree_scroll, init=False)
     yield split_view
@@ -433,9 +602,10 @@ class BushwackApp(App):
     tree = self.query_one('#conversation_tree', Tree)
     tree.vertical_scrollbar.display = False
     tree.horizontal_scrollbar.display = False
-    metadata_container = self.query_one('#metadata_container', VerticalScroll)
-    metadata_container.vertical_scrollbar.display = False
-    metadata_container.horizontal_scrollbar.display = False
+    metadata_lines = self.query_one('#metadata_lines', MetadataLines)
+    metadata_lines.vertical_scrollbar.display = False
+    metadata_lines.horizontal_scrollbar.display = False
+    metadata_lines.attach_tree(tree)
     tree.focus()
     tree.root.expand()
     self._update_column_headers()
@@ -493,7 +663,7 @@ class BushwackApp(App):
 
       if announce_scope:
         self.show_status(f'Scope: {scope}')
-      self._refresh_metadata_view()
+      self._refresh_metadata_lines()
       self._sync_metadata_scroll()
     except Exception as exc:  # pragma: no cover - defensive logging
       tree.root.add_leaf(f'Error loading conversations: {exc}')
@@ -916,11 +1086,11 @@ class BushwackApp(App):
     self._set_selected_from_node(event.node)
 
   def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
-    self._refresh_metadata_view()
+    self._refresh_metadata_lines()
     self._sync_metadata_scroll()
 
   def on_tree_node_collapsed(self, event: Tree.NodeCollapsed) -> None:
-    self._refresh_metadata_view()
+    self._refresh_metadata_lines()
     self._sync_metadata_scroll()
 
   def show_status(self, message: str, duration: float = 3.0) -> None:
@@ -1076,7 +1246,7 @@ class BushwackApp(App):
       self._selected_uuid = None
       self._clear_preview()
 
-    self._refresh_metadata_view()
+    self._highlight_metadata_node(node)
     self._sync_metadata_scroll()
 
   def _expand_node_path(self, node: TreeNode) -> None:
@@ -1474,69 +1644,35 @@ class BushwackApp(App):
     metadata_text.stylize('bold')
     return metadata_text
 
-  def _refresh_metadata_view(self) -> None:
+  def _metadata_components(self) -> Optional[Tuple[MetadataLines, Tree]]:
     try:
-      metadata = self.query_one('#metadata_pane', Static)
-    except NoMatches:
-      return
-
-    rows = self._build_metadata_rows()
-    if not rows:
-      renderable: Text | Group = Text('', justify='right')
-    elif len(rows) == 1:
-      renderable = rows[0]
-    else:
-      renderable = Group(*rows)
-
-    metadata.update(renderable)
-    self.call_after_refresh(self._sync_metadata_scroll)
-
-  def _build_metadata_rows(self) -> List[Text]:
-    try:
+      metadata = self.query_one('#metadata_lines', MetadataLines)
       tree = self.query_one('#conversation_tree', Tree)
     except NoMatches:
-      return []
+      return None
+    return metadata, tree
 
-    layout = self._column_layout()
-    rows: List[Text] = []
-    selected_node = tree.cursor_node
+  def _refresh_metadata_lines(self) -> None:
+    components = self._metadata_components()
+    if not components:
+      return
+    metadata, tree = components
+    metadata.refresh_from_tree()
+    metadata.highlight_node(tree.cursor_node)
 
-    for node in self._visible_tree_nodes(tree):
-      if isinstance(node.data, ConversationNodeData):
-        values = node.data.column_values
-      else:
-        values = {key: '' for key, _, _ in layout}
-      text = self._format_columns(
-        values, '', prefix='', wrap=False, layout=layout, align='right'
-      )
-      if node is selected_node:
-        text.stylize(Style(reverse=True))
-      rows.append(text)
-
-    return rows
-
-  def _visible_tree_nodes(self, tree: Tree) -> List[TreeNode]:
-    visible: List[TreeNode] = []
-
-    def _walk(node: TreeNode) -> None:
-      visible.append(node)
-      if node.is_expanded:
-        for child in node.children:
-          _walk(child)
-
-    for child in tree.root.children:
-      _walk(child)
-
-    return visible
+  def _highlight_metadata_node(self, node: Optional[TreeNode]) -> None:
+    components = self._metadata_components()
+    if not components:
+      return
+    metadata, tree = components
+    metadata.highlight_node(node if node is not None else tree.cursor_node)
 
   def _sync_metadata_scroll(self) -> None:
-    try:
-      tree = self.query_one('#conversation_tree', Tree)
-      container = self.query_one('#metadata_container', VerticalScroll)
-    except NoMatches:
+    components = self._metadata_components()
+    if not components:
       return
-
-    container.scroll_to(y=tree.scroll_y, animate=False)
+    metadata, tree = components
+    metadata.sync_scroll(tree.scroll_y)
 
   def _handle_tree_scroll(self, old_value: float, new_value: float) -> None:
     self._sync_metadata_scroll()

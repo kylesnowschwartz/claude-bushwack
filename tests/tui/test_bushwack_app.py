@@ -23,14 +23,9 @@ from claude_bushwack.tui import (
 )
 
 
-def _extract_metadata_lines(renderable) -> List[Text]:
-  if isinstance(renderable, Text):
-    return [renderable]
-  lines: List[Text] = []
-  if hasattr(renderable, 'renderables'):
-    for item in renderable.renderables:
-      lines.extend(_extract_metadata_lines(item))
-  return lines
+def _metadata_rows(app: BushwackApp) -> List[Text]:
+  metadata = app.query_one('#metadata_lines')
+  return metadata.export_rows()
 
 
 def _visible_tree_nodes(tree) -> List:
@@ -654,13 +649,11 @@ def test_all_scope_includes_project_path_column(bushwack_app: BushwackApp):
     first = tree.root.children[0]
     tree.select_node(first)
     bushwack_app._set_selected_from_node(first)
-    bushwack_app._refresh_metadata_view()
+    bushwack_app._refresh_metadata_lines()
     await pilot.pause()
 
-    metadata = bushwack_app.query_one('#metadata_pane')
-    assert metadata.renderable is not None
-    lines = _extract_metadata_lines(metadata.renderable)
-    assert any('~/' in line.plain for line in lines)
+    rows = _metadata_rows(bushwack_app)
+    assert any('~/' in line.plain for line in rows)
 
   run_app(bushwack_app, _interaction)
 
@@ -680,8 +673,8 @@ def test_split_layout_widgets_present(bushwack_app: BushwackApp):
       metadata_header.renderable, 'plain', str(metadata_header.renderable)
     )
     assert 'Modified' in metadata_header_text
-    metadata_pane = bushwack_app.query_one('#metadata_pane')
-    assert metadata_pane
+    metadata_lines = bushwack_app.query_one('#metadata_lines')
+    assert metadata_lines
 
   run_app(bushwack_app, _interaction)
 
@@ -689,10 +682,9 @@ def test_split_layout_widgets_present(bushwack_app: BushwackApp):
 def test_metadata_pane_right_aligned(bushwack_app: BushwackApp):
   async def _interaction(pilot) -> None:
     await pilot.pause()
-    bushwack_app._refresh_metadata_view()
-    metadata = bushwack_app.query_one('#metadata_pane')
-    assert metadata.renderable is not None
-    lines = _extract_metadata_lines(metadata.renderable)
+    bushwack_app._refresh_metadata_lines()
+    await pilot.pause()
+    lines = _metadata_rows(bushwack_app)
     assert lines, 'Expected metadata rows to be rendered'
     layout = bushwack_app._column_layout()
     widths = [width for _, width, _ in layout]
@@ -721,9 +713,9 @@ def test_metadata_rows_follow_tree_visibility(bushwack_app: BushwackApp):
     tree = bushwack_app.query_one('#conversation_tree')
     await pilot.pause()
 
-    bushwack_app._refresh_metadata_view()
-    metadata = bushwack_app.query_one('#metadata_pane')
-    rows_initial = _extract_metadata_lines(metadata.renderable)
+    bushwack_app._refresh_metadata_lines()
+    await pilot.pause()
+    rows_initial = _metadata_rows(bushwack_app)
     visible_initial = _visible_tree_nodes(tree)
     assert len(rows_initial) == len(visible_initial)
 
@@ -732,27 +724,29 @@ def test_metadata_rows_follow_tree_visibility(bushwack_app: BushwackApp):
     )
     node_with_children.expand()
     await pilot.pause()
-    bushwack_app._refresh_metadata_view()
+    bushwack_app._refresh_metadata_lines()
+    await pilot.pause()
 
-    rows_after_expand = _extract_metadata_lines(metadata.renderable)
+    rows_after_expand = _metadata_rows(bushwack_app)
     visible_after_expand = _visible_tree_nodes(tree)
     assert len(rows_after_expand) == len(visible_after_expand)
 
     tree.select_node(node_with_children.children[0])
     bushwack_app._set_selected_from_node(tree.cursor_node)
-    bushwack_app._refresh_metadata_view()
+    bushwack_app._refresh_metadata_lines()
     await pilot.pause()
 
     selected_index = visible_after_expand.index(tree.cursor_node)
-    rows_with_selection = _extract_metadata_lines(metadata.renderable)
+    rows_with_selection = _metadata_rows(bushwack_app)
     selected_row = rows_with_selection[selected_index]
     assert any(span.style and span.style.reverse for span in selected_row.spans)
 
     node_with_children.collapse()
     await pilot.pause()
-    bushwack_app._refresh_metadata_view()
+    bushwack_app._refresh_metadata_lines()
+    await pilot.pause()
 
-    rows_after_collapse = _extract_metadata_lines(metadata.renderable)
+    rows_after_collapse = _metadata_rows(bushwack_app)
     visible_after_collapse = _visible_tree_nodes(tree)
     assert len(rows_after_collapse) == len(visible_after_collapse)
 
@@ -781,9 +775,9 @@ def test_metadata_scroll_tracks_tree(
 
   async def _interaction(pilot) -> None:
     tree = bushwack_app.query_one('#conversation_tree')
-    metadata_container = bushwack_app.query_one('#metadata_container')
+    metadata_lines = bushwack_app.query_one('#metadata_lines')
     await pilot.pause()
-    bushwack_app._refresh_metadata_view()
+    bushwack_app._refresh_metadata_lines()
     await pilot.pause()
 
     visible_nodes = _visible_tree_nodes(tree)
@@ -817,12 +811,12 @@ def test_metadata_scroll_tracks_tree(
     )
     assert selected_height > 1
 
-    top_line = int(metadata_container.scroll_offset.y)
-    viewport_height = metadata_container.window_region.height
+    top_line = int(metadata_lines.scroll_offset.y)
+    viewport_height = metadata_lines.window_region.height
     bottom_line = top_line + viewport_height - 1
 
-    assert metadata_container.max_scroll_y > 0
-    assert metadata_container.scroll_offset.y > 0
+    assert metadata_lines.max_scroll_y > 0
+    assert metadata_lines.scroll_offset.y > 0
     assert top_line <= selected_index <= bottom_line
 
   run_app(bushwack_app, _interaction)
