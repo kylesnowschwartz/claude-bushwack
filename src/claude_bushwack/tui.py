@@ -213,7 +213,7 @@ class MetadataLines(ScrollView):
       strip = self._render_line_for_node(node, highlight)
       self._line_cache[cache_key] = strip
 
-    return strip.crop_extend(scroll_x, scroll_x + width, None)
+    return strip.crop_extend(scroll_x, scroll_x + width, base_style)
 
   def _render_line_for_node(self, node: TreeNode, highlight: bool) -> Strip:
     text = self._build_row_text(node, highlight)
@@ -553,7 +553,6 @@ class BushwackApp(App):
     metadata_header.styles.width = '2fr'
     metadata_header.styles.text_align = 'left'
     metadata_header.styles.padding = (0, 1)
-    metadata_header.styles.color = 'white'
     header_row = Horizontal(tree_header, metadata_header, id='header_row')
     header_row.styles.height = 'auto'
     yield header_row
@@ -581,7 +580,6 @@ class BushwackApp(App):
     metadata_lines.styles.padding = (0, 1)
     metadata_lines.styles.background = shared_background
     metadata_lines.styles.background_tint = 'transparent'
-    metadata_lines.styles.color = 'white'
     metadata_lines.styles.scrollbar_size_vertical = 0
     metadata_lines.styles.scrollbar_size_horizontal = 0
 
@@ -1334,7 +1332,7 @@ class BushwackApp(App):
       return '~'
     home_prefix = f'{home}/'
     if path_str.startswith(home_prefix):
-      return f'~/{path_str[len(home_prefix):]}'
+      return f'~/{path_str[len(home_prefix) :]}'
     return path_str
 
   @staticmethod
@@ -1436,7 +1434,6 @@ class BushwackApp(App):
       line = f'{line}  {trailing}' if line else trailing
 
     text = Text(line)
-    text.stylize(Style(color='white'))
     text.no_wrap = not wrap
     return text
 
