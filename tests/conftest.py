@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -26,11 +27,10 @@ class ConversationLine:
 
 
 @pytest.fixture
-def projects_root(tmp_path: Path) -> Path:
+def projects_root() -> Path:
   """Create an isolated Claude projects root for tests."""
-  root = tmp_path / 'projects'
-  root.mkdir()
-  return root
+  with TemporaryDirectory() as tmp:
+    yield Path(tmp)
 
 
 @pytest.fixture

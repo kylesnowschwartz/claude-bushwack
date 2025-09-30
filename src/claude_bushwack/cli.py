@@ -75,12 +75,17 @@ def list_conversations(all_projects, project_path, tree):
       scope = f'project: {project_path}'
     else:
       conversations = manager.find_all_conversations(current_project_only=True)
-      current_project = manager._get_current_project_dir()
-      if current_project:
-        project_path_display = manager._project_dir_to_path(current_project)
-        scope = f'current project: {project_path_display}'
+      if conversations:
+        # Use the actual project path from the first conversation
+        project_path_display = conversations[0].project_path
+        scope = f'current project: \n{project_path_display}'
       else:
-        scope = 'current project (not found)'
+        current_project = manager._get_current_project_dir()
+        if current_project:
+          project_path_display = manager._project_dir_to_path(current_project)
+          scope = f'current project: {project_path_display}'
+        else:
+          scope = 'current project (not found)'
 
     if not conversations:
       console.print(f'[yellow]No conversations found for {scope}.[/yellow]')

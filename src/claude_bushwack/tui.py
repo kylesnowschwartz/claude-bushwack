@@ -327,6 +327,11 @@ class ProjectDirectoryTree(DirectoryTree):
     if encoded_path == self._manager.claude_projects_dir:
       return None
     try:
+      # Try to get the actual project path from a conversation file in this directory
+      project_path = self._manager._get_project_path_from_dir(encoded_path)
+      if project_path:
+        return Path(project_path)
+      # Fallback to the old method if no conversation files found
       return self._manager._project_dir_to_path(encoded_path.name)
     except Exception:
       return None

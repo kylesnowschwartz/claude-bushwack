@@ -296,7 +296,7 @@ def test_branch_conversation_success(
 ):
   new_uuid = '44444444-4444-4444-4444-444444444444'
   source_uuid = '11111111-1111-1111-1111-111111111111'
-  expected_target = Path(populated_manager.find_conversation(source_uuid).project_path)
+  expected_target = Path(project_cwd)
 
   def fake_branch(
     uuid: str, target_project_path: Optional[Path] = None

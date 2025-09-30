@@ -33,26 +33,72 @@ class ConversationFile:
 class ClaudeConversationManager:
   """Manages Claude Code conversation files."""
 
+  # TODO: Revisit metadata extraction strategy
+  # Current approach: Scan first 50 lines, check fields in assumed priority order
+  # Concerns:
+  #   - No empirical validation of field reliability (cwd vs projectPath vs others)
+  #   - Line-by-line JSON parsing may not be optimal for performance
+  # Alternatives to investigate:
+  #   - External tools (jq, grep) for faster field extraction
+  #   - Statistical analysis of actual conversation files to determine field priority
+  #   - Streaming JSON parser with early exit on first valid field
+  # Revisit if metadata scanning becomes a bottleneck or field priority proves incorrect
+  _PROJECT_PATH_FIELDS: Tuple[str, ...] = (
+    'cwd',
+    'projectPath',
+    'workspaceRoot',
+    'workspacePath',
+    'projectRoot',
+    'workingDirectory',
+  )
+  _PROJECT_PATH_FIELD_TOKENS: Tuple[str, ...] = tuple(
+    f'"{field}"' for field in _PROJECT_PATH_FIELDS
+  )
+  _METADATA_SCAN_LINE_LIMIT: int = 50
+
   def __init__(self, claude_projects_dir: Optional[Path] = None):
     if claude_projects_dir is None:
       claude_projects_dir = Path.home() / '.claude' / 'projects'
     self.claude_projects_dir = claude_projects_dir
+    # Remember the original path we encoded for each project token so we can
+    # reliably decode hyphenated segments later in the session.
+    # Note: Not thread-safe; intended for single-threaded CLI/TUI usage.
+    # No eviction strategy: CLI processes are short-lived, and even 1000 projects
+    # only consume ~50KB memory (negligible for typical usage patterns).
+    self._project_dir_cache: Dict[str, str] = {}
 
   def _path_to_project_dir(self, path: Path) -> str:
     """Convert filesystem path to Claude project directory name."""
+    normalized_path = Path(path)
     # Replace forward slashes with dashes
-    path_str = str(path).replace('/', '-')
+    path_str = str(normalized_path).replace('/', '-')
     # Replace single dots with double dashes (for hidden directories like .config)
     path_str = path_str.replace('-.', '--')
+    # Cache the round-trip mapping so hyphenated segments stay intact when
+    # decoded later.
+    self._project_dir_cache[path_str] = str(normalized_path)
     return path_str
 
   def _project_dir_to_path(self, project_dir: str) -> Path:
     """Convert Claude project directory name back to filesystem path."""
-    # First replace double dashes with -.
+    cached_path = self._project_dir_cache.get(project_dir)
+    if cached_path:
+      return Path(cached_path)
+
+    # Try to recover the real path from JSONL metadata inside the directory.
+    project_dir_path = self.claude_projects_dir / project_dir
+    if project_dir_path.exists() and project_dir_path.is_dir():
+      project_path = self._get_project_path_from_dir(project_dir_path)
+      if project_path:
+        self._project_dir_cache[project_dir] = project_path
+        return Path(project_path)
+
+    # Fallback to the legacy lossy transformation so we always return a value.
     path_str = project_dir.replace('--', '-.')
-    # Then replace remaining single dashes with /
     path_str = path_str.replace('-', '/')
-    return Path(path_str)
+    decoded_path = Path(path_str)
+    # Don't cache the lossy fallback; a subsequent metadata lookup should win.
+    return decoded_path
 
   def _get_current_project_dir(self) -> Optional[str]:
     """Get project directory name for current working directory."""
@@ -71,6 +117,86 @@ class ClaudeConversationManager:
       return None
     except (OSError, json.JSONDecodeError):
       return None
+
+  def _get_project_path_from_jsonl(self, conversation_file: Path) -> Optional[str]:
+    """Extract project path from JSONL conversation file metadata."""
+
+    try:
+      with open(conversation_file, 'r') as f:
+        for _ in range(self._METADATA_SCAN_LINE_LIMIT):
+          line = f.readline()
+          if not line:
+            break
+
+          stripped = line.strip()
+          if not stripped:
+            continue
+
+          if not any(token in stripped for token in self._PROJECT_PATH_FIELD_TOKENS):
+            continue
+
+          try:
+            data = json.loads(stripped)
+          except json.JSONDecodeError:
+            continue
+
+          if not isinstance(data, dict):
+            continue
+
+          project_path = self._extract_project_path_from_dict(data)
+          if project_path:
+            return project_path
+      return None
+    except OSError:
+      return None
+
+  @classmethod
+  def _extract_project_path_from_dict(cls, data: Dict[str, Any]) -> Optional[str]:
+    """Return the first valid project path from known metadata fields."""
+
+    for field in cls._PROJECT_PATH_FIELDS:
+      value = cls._coerce_project_path(data.get(field))
+      if value:
+        return value
+
+    metadata = data.get('metadata')
+    if isinstance(metadata, dict):
+      for field in cls._PROJECT_PATH_FIELDS:
+        value = cls._coerce_project_path(metadata.get(field))
+        if value:
+          return value
+
+    return None
+
+  @staticmethod
+  def _coerce_project_path(value: Any) -> Optional[str]:
+    if isinstance(value, str):
+      normalized = value.strip()
+      return normalized or None
+    return None
+
+  def _get_project_path_from_dir(self, directory: Path) -> Optional[str]:
+    """Extract project path from any JSONL file in directory.
+
+    Iterates through directory contents, checking each JSONL file for valid
+    project path metadata. Returns the first valid path found.
+
+    Args:
+        directory: Directory containing JSONL conversation files
+
+    Returns:
+        Project path string if found, None otherwise
+    """
+    try:
+      for file_path in directory.iterdir():
+        if not file_path.is_file() or file_path.suffix != '.jsonl':
+          continue
+        project_path = self._get_project_path_from_jsonl(file_path)
+        if project_path:
+          return project_path
+    except (OSError, PermissionError):
+      pass
+    return None
 
   def _set_parent_uuid_in_jsonl(
     self, conversation_file: Path, parent_uuid: str
@@ -173,7 +299,14 @@ class ClaudeConversationManager:
           try:
             if file_path.is_file() and uuid_pattern.match(file_path.name):
               uuid = file_path.stem
-              project_path = self._project_dir_to_path(project_dir_name)
+
+              # Try to get project path from JSONL metadata first
+              project_path_from_metadata = self._get_project_path_from_jsonl(file_path)
+              if project_path_from_metadata:
+                project_path = project_path_from_metadata
+              else:
+                # Fallback to reconstructing from directory name (may be incorrect for paths with hyphens)
+                project_path = str(self._project_dir_to_path(project_dir_name))
 
               # Get file modification time safely
               try:
@@ -189,7 +322,7 @@ class ClaudeConversationManager:
                 path=file_path,
                 uuid=uuid,
                 project_dir=project_dir_name,
-                project_path=str(project_path),
+                project_path=project_path,
                 last_modified=last_modified,
                 parent_uuid=parent_uuid,
               )
